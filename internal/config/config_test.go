@@ -7,8 +7,10 @@ import (
 )
 
 var (
-	addrKey = "ATTEST_ADDR"
-	apiKey  = "ATTEST_API_KEY"
+	addrKey    = "ATTEST_ADDR"
+	apiKey     = "ATTEST_API_KEY"
+	tlsCertKey = "ATTEST_TLS_CERT"
+	tlsKeyKey  = "ATTEST_TLS_KEY"
 	// 独立列出时长字段，避免用 envKeys[2:] 这类依赖数组顺序的切片——
 	// 中间插一个 key 就静默错位，变成"漏测某个字段"且无人察觉。
 	timeoutKeys = []string{
@@ -24,7 +26,7 @@ var (
 // clearEnv 真正 unset 相关环境变量，测试结束后恢复原值。
 func clearEnv(t *testing.T) {
 	t.Helper()
-	keys := append([]string{addrKey, apiKey}, timeoutKeys...)
+	keys := append([]string{addrKey, apiKey, tlsCertKey, tlsKeyKey}, timeoutKeys...)
 	for _, k := range keys {
 		old, existed := os.LookupEnv(k)
 		os.Unsetenv(k)
@@ -63,11 +65,19 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.Addr != ":8090" {
 		t.Errorf("Addr = %q, want :8090", cfg.Addr)
 	}
+	if cfg.TLSCertPath != "certs/tls.crt" {
+		t.Errorf("TLSCertPath = %q, want certs/tls.crt", cfg.TLSCertPath)
+	}
+	if cfg.TLSKeyPath != "certs/tls.key" {
+		t.Errorf("TLSKeyPath = %q, want certs/tls.key", cfg.TLSKeyPath)
+	}
 }
 
 func TestLoad_Overrides(t *testing.T) {
 	clearEnv(t)
 	t.Setenv(addrKey, ":9999")
+	t.Setenv(tlsCertKey, "/tmp/cert")
+	t.Setenv(tlsKeyKey, "/tmp/key")
 	t.Setenv("ATTEST_READ_TIMEOUT", "3s")
 	t.Setenv("ATTEST_READ_HEADER_TIMEOUT", "1s")
 	t.Setenv("ATTEST_HANDLER_TIMEOUT", "2s")
@@ -78,6 +88,12 @@ func TestLoad_Overrides(t *testing.T) {
 	}
 	if cfg.Addr != ":9999" {
 		t.Errorf("Addr = %q", cfg.Addr)
+	}
+	if cfg.TLSCertPath != "/tmp/cert" {
+		t.Errorf("TLSCertPath = %q", cfg.TLSCertPath)
+	}
+	if cfg.TLSKeyPath != "/tmp/key" {
+		t.Errorf("TLSKeyPath = %q", cfg.TLSKeyPath)
 	}
 	if cfg.ReadTimeout != 3*time.Second {
 		t.Errorf("ReadTimeout = %v", cfg.ReadTimeout)
@@ -95,6 +111,20 @@ func TestLoad_AddrSetButEmpty(t *testing.T) {
 	t.Setenv(addrKey, "")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for empty ATTEST_ADDR")
+	}
+}
+
+func TestLoad_TLSPathsSetButEmpty(t *testing.T) {
+	clearEnv(t)
+	t.Setenv(tlsCertKey, "")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for empty ATTEST_TLS_CERT")
+	}
+
+	t.Setenv(tlsCertKey, "valid/path")
+	t.Setenv(tlsKeyKey, "")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for empty ATTEST_TLS_KEY")
 	}
 }
 

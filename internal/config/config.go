@@ -21,6 +21,10 @@ type Config struct {
 	// APIKey 是阶段四 /metrics 等受保护端点的预留字段，阶段一不读取。
 	// /admission 由 kube-apiserver 调用，认证依赖 TLS 而非共享密钥（立项书 7.3）。
 	APIKey string
+
+	// TLSCertPath 和 TLSKeyPath 是服务端证书和私钥的路径。
+	TLSCertPath string
+	TLSKeyPath  string
 }
 
 // timeoutField 把「环境变量名 + 目标指针 + 默认值」绑在一起。
@@ -45,6 +49,25 @@ func Load() (Config, error) {
 		cfg.Addr = v
 	} else {
 		cfg.Addr = ":8090"
+	}
+
+	// TLS 证书路径读取：同样区分「未设置」与「设为空」。
+	if v, ok := os.LookupEnv("ATTEST_TLS_CERT"); ok {
+		if v == "" {
+			return Config{}, errors.New("ATTEST_TLS_CERT is set but empty")
+		}
+		cfg.TLSCertPath = v
+	} else {
+		cfg.TLSCertPath = "certs/tls.crt" // 默认本地开发路径
+	}
+
+	if v, ok := os.LookupEnv("ATTEST_TLS_KEY"); ok {
+		if v == "" {
+			return Config{}, errors.New("ATTEST_TLS_KEY is set but empty")
+		}
+		cfg.TLSKeyPath = v
+	} else {
+		cfg.TLSKeyPath = "certs/tls.key" // 默认本地开发路径
 	}
 
 	fields := []timeoutField{
