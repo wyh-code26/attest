@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: attest-admission
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: attest-admission
+  template:
+    metadata:
+      labels:
+        app: attest-admission
+    spec:
+      containers:
+      - name: attest-admission
+        image: attest-api:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8090
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8090
+            scheme: HTTPS
+          initialDelaySeconds: 2
+          periodSeconds: 5
