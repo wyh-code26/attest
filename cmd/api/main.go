@@ -37,11 +37,9 @@ func run(logger *slog.Logger) error {
 	readiness.MarkReady()
 
 	// 阶段二：接入真实的 OCI Fetcher。
-	// 它仍然被 Fetcher 接口隔离，admission 逻辑不受影响。
 	ociFetcher := attest.NewOCIFetcher()
 
 	// 阶段二策略：要求 SLSA L3，且构建者是 GitHub Actions。
-	// 阶段三会换成从声明式配置文件加载。
 	simplePolicy := policy.NewSimplePolicy(policy.Rule{
 		MinSLSA:         3,
 		AllowedBuilders: []string{"https://github.com/actions/runner"},

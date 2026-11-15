@@ -14,23 +14,17 @@ import (
 
 // OCIFetcher 从 OCI Registry 拉取 attestation。
 // 它是 Fetcher 接口的真实实现，go-containerregistry 的依赖被隔离在此文件中。
-type OCIFetcher struct {
-	// RegistryPrefix 是阶段二简化：硬编码 registry 前缀，阶段三从 image 引用中提取。
-	RegistryPrefix string
-}
+type OCIFetcher struct{}
 
 func NewOCIFetcher() *OCIFetcher {
-	return &OCIFetcher{
-		RegistryPrefix: "ghcr.io",
-	}
+	return &OCIFetcher{}
 }
 
-// Fetch 根据 image digest 拉取 SLSA provenance。
-// 流程：Referrers API → 找 in-toto/SLSA 类型 → 拉取 blob → 解析为 Provenance。
-func (f *OCIFetcher) Fetch(ctx context.Context, imageDigest string) (*Provenance, error) {
-	ref, err := name.NewDigest(fmt.Sprintf("%s/%s", f.RegistryPrefix, imageDigest))
+// Fetch 根据完整 image 引用（如 "nginx@sha256:..."）拉取 SLSA provenance。
+func (f *OCIFetcher) Fetch(ctx context.Context, imageRef string) (*Provenance, error) {
+	ref, err := name.NewDigest(imageRef)
 	if err != nil {
-		return nil, fmt.Errorf("parse digest %q: %w", imageDigest, err)
+		return nil, fmt.Errorf("parse image ref %q: %w", imageRef, err)
 	}
 
 	index, err := remote.Referrers(ref, remote.WithContext(ctx))
@@ -38,7 +32,7 @@ func (f *OCIFetcher) Fetch(ctx context.Context, imageDigest string) (*Provenance
 		if strings.Contains(err.Error(), "does not support the Referrers API") {
 			return nil, ErrAttestationNotFound
 		}
-		return nil, fmt.Errorf("referrers for %s: %w", imageDigest, err)
+		return nil, fmt.Errorf("referrers for %s: %w", imageRef, err)
 	}
 
 	manifests, err := index.IndexManifest()

@@ -15,7 +15,6 @@ import (
 )
 
 // AdmissionReview 是 kube-apiserver 发来的最小结构。
-// 只定义本项目用到的字段，完整定义见 k8s.io/api/admission/v1。
 type AdmissionReview struct {
 	APIVersion string             `json:"apiVersion"`
 	Kind       string             `json:"kind"`
@@ -40,7 +39,6 @@ type GroupVersionKind struct {
 	Kind    string `json:"kind"`
 }
 
-// allowed 字段不能加 omitempty：false 必须显式出现在 JSON 里。
 type AdmissionResponse struct {
 	UID     string  `json:"uid"`
 	Allowed bool    `json:"allowed"`
@@ -68,7 +66,6 @@ func (r *AdmissionRequest) GetObjectBytes() ([]byte, error) {
 }
 
 // AdmissionDeps 是 AdmissionHandler 的显式依赖。
-// 命名规则：消费者名 + Deps。不建全局 Deps 惯例。
 type AdmissionDeps struct {
 	Logger  *slog.Logger
 	Fetcher attest.Fetcher
@@ -76,17 +73,6 @@ type AdmissionDeps struct {
 }
 
 // AdmissionHandler 返回准入阶段的处理函数。
-//
-// 阶段二完成：从 Pod 对象提取所有容器的镜像 digest，逐个 fetch provenance
-// 并调用 policy 判定。任何一步失败，立即 fail closed 返回 deny。
-//
-// 契约（立项书 7.3 + Non-negotiable）：
-//   - ctx 直接取 r.Context()，deadline 由 Timeout 中间件统一挂，不嵌套 WithTimeout。
-//   - 所有阻塞 I/O 必须用带 ctx 的 API（Fetcher 内部实现负责）。
-//   - 业务 deny 返回 HTTP 200 + allowed:false（准入协议要求），
-//     协议层错误（解析失败）返回 4xx，由 apiserver 按 failurePolicy 处理。
-//   - 日志区分 reason：missing_attestation / fetch_error / policy_denied /
-//     invalid_image_ref / missing_object。排障方向必须清晰。
 func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 	if d.Logger == nil {
 		panic("httpapi: AdmissionDeps.Logger must not be nil")
@@ -149,8 +135,6 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 			"request_id", RequestIDFrom(ctx),
 		)
 
-		// 从对象体提取容器镜像，逐个 fetch + verify。
-		// 任何一步失败 → deny，不遗漏任何一个容器（fail closed）。
 		images, err := extractContainerImages(req)
 		if err != nil {
 			d.Logger.Warn("extract container images failed",
@@ -165,6 +149,7 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 		}
 
 		for _, image := range images {
+			// 验证镜像必须由 digest 固定，并提取 digest 用于日志。
 			digest, err := parseImageDigest(image)
 			if err != nil {
 				d.Logger.Warn("invalid image reference",
@@ -179,7 +164,8 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 				return
 			}
 
-			prov, err := d.Fetcher.Fetch(ctx, digest)
+			// 把完整 image 引用传给 Fetcher，以便它定位 registry 和 repository。
+			prov, err := d.Fetcher.Fetch(ctx, image)
 			if err != nil {
 				reason := "fetch_error"
 				if errors.Is(err, attest.ErrAttestationNotFound) {
@@ -228,8 +214,6 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 	}
 }
 
-// denyReview 构造一个准入拒绝响应。
-// 协议规定：业务拒绝用 HTTP 200 + allowed:false，message 进 status.message。
 func denyReview(apiVersion, kind, uid, message string) AdmissionReview {
 	return AdmissionReview{
 		APIVersion: apiVersion,
@@ -245,8 +229,6 @@ func denyReview(apiVersion, kind, uid, message string) AdmissionReview {
 	}
 }
 
-// podObjectView 是 Pod 对象的最小视图，只关心容器镜像。
-// 不引入 k8s.io/api，项目叙事是"理解准入协议"。
 type podObjectView struct {
 	Spec struct {
 		Containers []struct {
@@ -255,8 +237,6 @@ type podObjectView struct {
 	} `json:"spec"`
 }
 
-// extractContainerImages 从 AdmissionRequest 中取出所有容器的 image 引用。
-// 若对象体解析失败，或没有任何容器，返回错误（handler 应 deny）。
 func extractContainerImages(req *AdmissionRequest) ([]string, error) {
 	raw, err := req.GetObjectBytes()
 	if err != nil {
@@ -281,11 +261,6 @@ func extractContainerImages(req *AdmissionRequest) ([]string, error) {
 	return images, nil
 }
 
-// parseImageDigest 从镜像引用中提取 sha256 digest。
-//
-// 接受的格式：repo[:tag]@sha256:<64 hex>。
-// 只用 tag（如 nginx:latest）的镜像直接报错——没有 digest 就无法
-// 可靠地关联 attestation，必须 deny（fail closed）。
 func parseImageDigest(image string) (string, error) {
 	at := strings.LastIndex(image, "@")
 	if at < 0 {
@@ -308,7 +283,6 @@ func parseImageDigest(image string) (string, error) {
 	return digest, nil
 }
 
-// truncate 返回 b 的前 n 字节，用于日志记录脱敏的请求体前缀。
 func truncate(b []byte, n int) string {
 	if len(b) <= n {
 		return string(b)

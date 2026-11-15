@@ -20,7 +20,11 @@ func (p *denyPolicy) Evaluate(_ context.Context, _ *attest.Provenance) (bool, st
 	return false, "test-policy-denied"
 }
 
-// buildAdmissionRequest 构造一个用于测试的 AdmissionReview JSON。
+const (
+	validDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	validImage  = "nginx@" + validDigest
+)
+
 func buildAdmissionRequest(uid, image string) string {
 	req := AdmissionReview{
 		APIVersion: "admission.k8s.io/v1",
@@ -38,36 +42,30 @@ func buildAdmissionRequest(uid, image string) string {
 	return string(b)
 }
 
-// setupTestHandler 构造测试用的 handler 和 fakeFetcher。
-func setupTestHandler() (*httpapiHandler, *attest.FakeFetcher) {
-	logger := discardLogger()
+type testHandler struct {
+	h http.HandlerFunc
+}
 
-	// 预置一个合法的 digest
-	validDigest := "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+func setupTestHandler() *testHandler {
+	logger := discardLogger()
 	fakeFetcher := attest.NewFakeFetcher(map[string]*attest.Provenance{
-		validDigest: {
+		validImage: {
 			BuildType: "https://slsa.dev/provenance/v1",
 			Builder:   "https://github.com/actions/runner",
 			SourceURI: "https://github.com/wyh-code26/attest",
 		},
 	})
-
 	h := AdmissionHandler(AdmissionDeps{
 		Logger:  logger,
 		Fetcher: fakeFetcher,
 		Policy:  &policy.AllowAll{},
 	})
-
-	return &httpapiHandler{h: h}, fakeFetcher
-}
-
-type httpapiHandler struct {
-	h http.HandlerFunc
+	return &testHandler{h: h}
 }
 
 func TestAdmissionHandler_Allow(t *testing.T) {
-	handler, _ := setupTestHandler()
-	body := buildAdmissionRequest("t1", "nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111")
+	handler := setupTestHandler()
+	body := buildAdmissionRequest("t1", validImage)
 
 	w := httptest.NewRecorder()
 	handler.h.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
@@ -84,8 +82,7 @@ func TestAdmissionHandler_Allow(t *testing.T) {
 }
 
 func TestAdmissionHandler_Deny_InvalidImage(t *testing.T) {
-	handler, _ := setupTestHandler()
-	// 没有 @sha256
+	handler := setupTestHandler()
 	body := buildAdmissionRequest("t2", "nginx:alpine")
 
 	w := httptest.NewRecorder()
@@ -103,8 +100,7 @@ func TestAdmissionHandler_Deny_InvalidImage(t *testing.T) {
 }
 
 func TestAdmissionHandler_Deny_MissingAttestation(t *testing.T) {
-	handler, _ := setupTestHandler()
-	// 带 sha256，但不在 FakeFetcher 的 map 里
+	handler := setupTestHandler()
 	body := buildAdmissionRequest("t3", "nginx@sha256:2222222222222222222222222222222222222222222222222222222222222222")
 
 	w := httptest.NewRecorder()
@@ -122,23 +118,21 @@ func TestAdmissionHandler_Deny_MissingAttestation(t *testing.T) {
 }
 
 func TestAdmissionHandler_Deny_PolicyDenied(t *testing.T) {
-	// 使用拒绝策略
 	logger := discardLogger()
 	fakeFetcher := attest.NewFakeFetcher(map[string]*attest.Provenance{
-		"sha256:1111111111111111111111111111111111111111111111111111111111111111": {
+		validImage: {
 			BuildType: "https://slsa.dev/provenance/v1",
 			Builder:   "https://github.com/actions/runner",
 			SourceURI: "https://github.com/wyh-code26/attest",
 		},
 	})
-
 	h := AdmissionHandler(AdmissionDeps{
 		Logger:  logger,
 		Fetcher: fakeFetcher,
 		Policy:  &denyPolicy{},
 	})
 
-	body := buildAdmissionRequest("t4", "nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111")
+	body := buildAdmissionRequest("t4", validImage)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
 
@@ -154,7 +148,7 @@ func TestAdmissionHandler_Deny_PolicyDenied(t *testing.T) {
 }
 
 func TestAdmissionHandler_InvalidJSON(t *testing.T) {
-	handler, _ := setupTestHandler()
+	handler := setupTestHandler()
 	w := httptest.NewRecorder()
 	handler.h.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString("not json")))
 	if w.Code != http.StatusBadRequest {
@@ -163,7 +157,7 @@ func TestAdmissionHandler_InvalidJSON(t *testing.T) {
 }
 
 func TestAdmissionHandler_MissingRequest(t *testing.T) {
-	handler, _ := setupTestHandler()
+	handler := setupTestHandler()
 	w := httptest.NewRecorder()
 	handler.h.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(`{"kind":"AdmissionReview"}`)))
 	if w.Code != http.StatusBadRequest {
