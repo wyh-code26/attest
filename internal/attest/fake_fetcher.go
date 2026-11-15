@@ -2,11 +2,15 @@ package attest
 
 import (
 	"context"
-	"fmt"
+	"errors"
 )
 
+// ErrAttestationNotFound 表示 registry 里没有该镜像的 attestation。
+// 上层用 errors.Is 判断，区分"没有证明"和"网络错误"。
+var ErrAttestationNotFound = errors.New("attestation not found")
+
+// FakeFetcher 是测试用的 Fetcher 实现，从内存 map 返回数据。
 type FakeFetcher struct {
-	// 用 map 模拟 registry 里的数据：key 是 image digest
 	data map[string]*Provenance
 }
 
@@ -14,15 +18,13 @@ func NewFakeFetcher(data map[string]*Provenance) *FakeFetcher {
 	return &FakeFetcher{data: data}
 }
 
-func (f *FakeFetcher) Fetch(ctx context.Context, imageDigest string) (*Provenance, error) {
+func (f *FakeFetcher) Fetch(_ context.Context, imageDigest string) (*Provenance, error) {
 	p, ok := f.data[imageDigest]
 	if !ok {
-		// 注意：这里必须返回特定的错误，比如 ErrAttestationNotFound，
-		// 以便上层 handler 区分“没有证明”和“网络错误”。
 		return nil, ErrAttestationNotFound
 	}
-	return p, nil
+	// 拷贝一份，避免调用方修改影响内部状态。
+	cp := *p
+	cp.SLSALevel = inferSLSALevel(cp.BuildType, cp.Builder)
+	return &cp, nil
 }
-
-// 预定义错误
-var ErrAttestationNotFound = fmt.Errorf("attestation not found")

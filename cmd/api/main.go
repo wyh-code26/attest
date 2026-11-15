@@ -19,7 +19,6 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
-
 	slog.SetDefault(logger)
 
 	if err := run(logger); err != nil {
@@ -37,15 +36,15 @@ func run(logger *slog.Logger) error {
 	readiness := &httpapi.Readiness{}
 	readiness.MarkReady()
 
-	// 阶段二早期：用 FakeFetcher + AllowAll 先把链路跑通。
-	// 阶段二后期替换为真实的 OCI Fetcher 和声明式 Policy。
-	fakeFetcher := attest.NewFakeFetcher(map[string]*attest.Provenance{
-		// 这条记录用来在联调时验证 allow 路径。
-		"sha256:1111111111111111111111111111111111111111111111111111111111111111": {
-			BuildType: "https://slsa.dev/provenance/v1",
-			Builder:   "https://github.com/actions/runner",
-			SourceURI: "https://github.com/wyh-code26/attest",
-		},
+	// 阶段二：接入真实的 OCI Fetcher。
+	// 它仍然被 Fetcher 接口隔离，admission 逻辑不受影响。
+	ociFetcher := attest.NewOCIFetcher()
+
+	// 阶段二策略：要求 SLSA L3，且构建者是 GitHub Actions。
+	// 阶段三会换成从声明式配置文件加载。
+	simplePolicy := policy.NewSimplePolicy(policy.Rule{
+		MinSLSA:         3,
+		AllowedBuilders: []string{"https://github.com/actions/runner"},
 	})
 
 	srv := &http.Server{
@@ -55,8 +54,8 @@ func run(logger *slog.Logger) error {
 			Readiness: readiness,
 			AdmissionHandler: httpapi.AdmissionHandler(httpapi.AdmissionDeps{
 				Logger:  logger,
-				Fetcher: fakeFetcher,
-				Policy:  &policy.AllowAll{},
+				Fetcher: ociFetcher,
+				Policy:  simplePolicy,
 			}),
 			HandlerTimeout: cfg.HandlerTimeout,
 		}),
