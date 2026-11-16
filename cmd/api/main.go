@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -10,8 +11,10 @@ import (
 	"syscall"
 
 	"github.com/wyh-code26/attest/internal/attest"
+	"github.com/wyh-code26/attest/internal/audit"
 	"github.com/wyh-code26/attest/internal/config"
 	"github.com/wyh-code26/attest/internal/httpapi"
+	"github.com/wyh-code26/attest/internal/metrics"
 	"github.com/wyh-code26/attest/internal/policy"
 )
 
@@ -36,14 +39,18 @@ func run(logger *slog.Logger) error {
 	readiness := &httpapi.Readiness{}
 	readiness.MarkReady()
 
-	// 阶段二：接入真实的 OCI Fetcher。
-	ociFetcher := attest.NewOCIFetcher()
+	policyPath := os.Getenv("ATTEST_POLICY_PATH")
+	if policyPath == "" {
+		policyPath = "policy.yaml"
+	}
+	pol, err := policy.NewFileLoader(policyPath).Load(context.Background())
+	if err != nil {
+		return fmt.Errorf("load policy: %w", err)
+	}
 
-	// 阶段二策略：要求 SLSA L3，且构建者是 GitHub Actions。
-	simplePolicy := policy.NewSimplePolicy(policy.Rule{
-		MinSLSA:         3,
-		AllowedBuilders: []string{"https://github.com/actions/runner"},
-	})
+	m := metrics.New()
+	auditRec := audit.NewRecorder(os.Stdout)
+	ociFetcher := attest.NewOCIFetcher()
 
 	srv := &http.Server{
 		Addr: cfg.Addr,
@@ -53,8 +60,11 @@ func run(logger *slog.Logger) error {
 			AdmissionHandler: httpapi.AdmissionHandler(httpapi.AdmissionDeps{
 				Logger:  logger,
 				Fetcher: ociFetcher,
-				Policy:  simplePolicy,
+				Policy:  pol,
+				Metrics: m,
+				Audit:   auditRec,
 			}),
+			MetricsHandler: m.Handler(),
 			HandlerTimeout: cfg.HandlerTimeout,
 		}),
 		ReadTimeout:       cfg.ReadTimeout,
@@ -69,7 +79,7 @@ func run(logger *slog.Logger) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("server listening (TLS)", "addr", cfg.Addr)
+		logger.Info("server listening (TLS)", "addr", cfg.Addr, "policy", policyPath)
 		if err := srv.ListenAndServeTLS(cfg.TLSCertPath, cfg.TLSKeyPath); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}

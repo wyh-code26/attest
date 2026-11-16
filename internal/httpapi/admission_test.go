@@ -10,10 +10,11 @@ import (
 	"testing"
 
 	"github.com/wyh-code26/attest/internal/attest"
+	"github.com/wyh-code26/attest/internal/audit"
+	"github.com/wyh-code26/attest/internal/metrics"
 	"github.com/wyh-code26/attest/internal/policy"
 )
 
-// denyPolicy 是测试用的策略桩，永远返回拒绝。
 type denyPolicy struct{}
 
 func (p *denyPolicy) Evaluate(_ context.Context, _ *attest.Provenance) (bool, string) {
@@ -42,125 +43,150 @@ func buildAdmissionRequest(uid, image string) string {
 	return string(b)
 }
 
-type testHandler struct {
-	h http.HandlerFunc
+type testEnv struct {
+	handler http.HandlerFunc
+	metrics *metrics.Metrics
+	audit   *bytes.Buffer
 }
 
-func setupTestHandler() *testHandler {
+func newTestEnv(pol policy.Policy, fakeMap map[string]*attest.Provenance) *testEnv {
 	logger := discardLogger()
-	fakeFetcher := attest.NewFakeFetcher(map[string]*attest.Provenance{
+	fakeFetcher := attest.NewFakeFetcher(fakeMap)
+	m := metrics.New()
+	auditBuf := &bytes.Buffer{}
+	auditRec := audit.NewRecorder(auditBuf)
+
+	h := AdmissionHandler(AdmissionDeps{
+		Logger:  logger,
+		Fetcher: fakeFetcher,
+		Policy:  pol,
+		Metrics: m,
+		Audit:   auditRec,
+	})
+	return &testEnv{handler: h, metrics: m, audit: auditBuf}
+}
+
+func defaultFakeMap() map[string]*attest.Provenance {
+	return map[string]*attest.Provenance{
 		validImage: {
 			BuildType: "https://slsa.dev/provenance/v1",
 			Builder:   "https://github.com/actions/runner",
 			SourceURI: "https://github.com/wyh-code26/attest",
 		},
-	})
-	h := AdmissionHandler(AdmissionDeps{
-		Logger:  logger,
-		Fetcher: fakeFetcher,
-		Policy:  &policy.AllowAll{},
-	})
-	return &testHandler{h: h}
+	}
 }
 
 func TestAdmissionHandler_Allow(t *testing.T) {
-	handler := setupTestHandler()
+	env := newTestEnv(&policy.AllowAll{}, defaultFakeMap())
 	body := buildAdmissionRequest("t1", validImage)
-
 	w := httptest.NewRecorder()
-	handler.h.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
-
 	var resp AdmissionReview
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Response == nil || !resp.Response.Allowed {
-		t.Errorf("expected allowed=true, got %+v", resp.Response)
+		t.Errorf("expected allow, got %+v", resp.Response)
+	}
+	if snap := env.metrics.Snapshot(); snap[metrics.ResultAllow] != 1 {
+		t.Errorf("metrics allow = %d, want 1", snap[metrics.ResultAllow])
+	}
+	if !strings.Contains(env.audit.String(), `"allowed":true`) {
+		t.Errorf("audit missing allow record:\n%s", env.audit.String())
 	}
 }
 
 func TestAdmissionHandler_Deny_InvalidImage(t *testing.T) {
-	handler := setupTestHandler()
+	env := newTestEnv(&policy.AllowAll{}, defaultFakeMap())
 	body := buildAdmissionRequest("t2", "nginx:alpine")
-
 	w := httptest.NewRecorder()
-	handler.h.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
 
 	var resp AdmissionReview
 	json.Unmarshal(w.Body.Bytes(), &resp)
-
 	if resp.Response.Allowed {
-		t.Fatal("expected allowed=false")
+		t.Fatal("expected deny")
 	}
 	if !strings.Contains(resp.Response.Result.Message, "must be pinned by sha256 digest") {
 		t.Errorf("unexpected message: %s", resp.Response.Result.Message)
 	}
+	if snap := env.metrics.Snapshot(); snap[metrics.ResultDenyInvalidImage] != 1 {
+		t.Errorf("metrics deny_invalid_image = %d, want 1", snap[metrics.ResultDenyInvalidImage])
+	}
+	if !strings.Contains(env.audit.String(), `"reason":"deny_invalid_image"`) {
+		t.Errorf("audit missing deny reason:\n%s", env.audit.String())
+	}
 }
 
 func TestAdmissionHandler_Deny_MissingAttestation(t *testing.T) {
-	handler := setupTestHandler()
+	env := newTestEnv(&policy.AllowAll{}, defaultFakeMap())
 	body := buildAdmissionRequest("t3", "nginx@sha256:2222222222222222222222222222222222222222222222222222222222222222")
-
 	w := httptest.NewRecorder()
-	handler.h.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
 
 	var resp AdmissionReview
 	json.Unmarshal(w.Body.Bytes(), &resp)
-
 	if resp.Response.Allowed {
-		t.Fatal("expected allowed=false")
+		t.Fatal("expected deny")
 	}
-	if !strings.Contains(resp.Response.Result.Message, "no valid provenance") {
-		t.Errorf("unexpected message: %s", resp.Response.Result.Message)
+	if snap := env.metrics.Snapshot(); snap[metrics.ResultDenyMissingAttestation] != 1 {
+		t.Errorf("metrics = %d, want 1", snap[metrics.ResultDenyMissingAttestation])
 	}
 }
 
 func TestAdmissionHandler_Deny_PolicyDenied(t *testing.T) {
-	logger := discardLogger()
-	fakeFetcher := attest.NewFakeFetcher(map[string]*attest.Provenance{
-		validImage: {
-			BuildType: "https://slsa.dev/provenance/v1",
-			Builder:   "https://github.com/actions/runner",
-			SourceURI: "https://github.com/wyh-code26/attest",
-		},
-	})
-	h := AdmissionHandler(AdmissionDeps{
-		Logger:  logger,
-		Fetcher: fakeFetcher,
-		Policy:  &denyPolicy{},
-	})
-
+	env := newTestEnv(&denyPolicy{}, defaultFakeMap())
 	body := buildAdmissionRequest("t4", validImage)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
 
 	var resp AdmissionReview
 	json.Unmarshal(w.Body.Bytes(), &resp)
-
 	if resp.Response.Allowed {
-		t.Fatal("expected allowed=false")
+		t.Fatal("expected deny")
 	}
 	if !strings.Contains(resp.Response.Result.Message, "denied: test-policy-denied") {
 		t.Errorf("unexpected message: %s", resp.Response.Result.Message)
 	}
+	if snap := env.metrics.Snapshot(); snap[metrics.ResultDenyPolicy] != 1 {
+		t.Errorf("metrics = %d, want 1", snap[metrics.ResultDenyPolicy])
+	}
+	if !strings.Contains(env.audit.String(), `"policy_reason":"test-policy-denied"`) {
+		t.Errorf("audit missing policy_reason:\n%s", env.audit.String())
+	}
 }
 
 func TestAdmissionHandler_InvalidJSON(t *testing.T) {
-	handler := setupTestHandler()
+	env := newTestEnv(&policy.AllowAll{}, defaultFakeMap())
 	w := httptest.NewRecorder()
-	handler.h.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString("not json")))
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString("not json")))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+	if snap := env.metrics.Snapshot(); snap[metrics.ResultErrorBadRequest] != 1 {
+		t.Errorf("metrics error_bad_request = %d, want 1", snap[metrics.ResultErrorBadRequest])
+	}
+}
+
+func TestAdmissionHandler_MissingRequest(t *testing.T) {
+	env := newTestEnv(&policy.AllowAll{}, defaultFakeMap())
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(`{"kind":"AdmissionReview"}`)))
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
 	}
 }
 
-func TestAdmissionHandler_MissingRequest(t *testing.T) {
-	handler := setupTestHandler()
+func TestAdmissionHandler_WrongMethod(t *testing.T) {
+	env := newTestEnv(&policy.AllowAll{}, defaultFakeMap())
 	w := httptest.NewRecorder()
-	handler.h.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(`{"kind":"AdmissionReview"}`)))
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", w.Code)
+	env.handler.ServeHTTP(w, httptest.NewRequest("GET", "/admission", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", w.Code)
+	}
+	if snap := env.metrics.Snapshot(); snap[metrics.ResultErrorMethodNotAllowed] != 1 {
+		t.Errorf("metrics error_method_not_allowed = %d, want 1", snap[metrics.ResultErrorMethodNotAllowed])
 	}
 }

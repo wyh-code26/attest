@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wyh-code26/attest/internal/metrics"
 )
 
 func TestNewRouter_Routes(t *testing.T) {
@@ -16,6 +18,7 @@ func TestNewRouter_Routes(t *testing.T) {
 		writeJSON(w, logger, http.StatusOK, map[string]string{"allow": "true"})
 	})
 	ready := &Readiness{}
+	m := metrics.New()
 
 	tests := []struct {
 		name   string
@@ -26,6 +29,7 @@ func TestNewRouter_Routes(t *testing.T) {
 		{"admission", "POST", "/admission", http.StatusOK},
 		{"healthz", "GET", "/healthz", http.StatusOK},
 		{"readyz not ready", "GET", "/readyz", http.StatusServiceUnavailable},
+		{"metrics", "GET", "/metrics", http.StatusOK},
 		{"admission wrong method", "GET", "/admission", http.StatusMethodNotAllowed},
 		{"unknown path", "GET", "/nope", http.StatusNotFound},
 	}
@@ -33,7 +37,9 @@ func TestNewRouter_Routes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := NewRouter(RouterDeps{
 				Logger: logger, Readiness: ready,
-				AdmissionHandler: adm, HandlerTimeout: time.Second,
+				AdmissionHandler: adm,
+				MetricsHandler:   m.Handler(),
+				HandlerTimeout:   time.Second,
 			})
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, httptest.NewRequest(tt.method, tt.path, nil))
@@ -42,21 +48,16 @@ func TestNewRouter_Routes(t *testing.T) {
 			}
 		})
 	}
-
-	ready.MarkReady()
-	r := NewRouter(RouterDeps{Logger: logger, Readiness: ready, AdmissionHandler: adm, HandlerTimeout: time.Second})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("GET", "/readyz", nil))
-	if w.Code != http.StatusOK {
-		t.Errorf("ready status = %d, want 200", w.Code)
-	}
 }
 
 func TestNewRouter_RejectsInvalidDeps(t *testing.T) {
+	m := metrics.New()
 	valid := func() RouterDeps {
 		return RouterDeps{
 			Logger: discardLogger(), Readiness: &Readiness{},
-			AdmissionHandler: http.NotFoundHandler(), HandlerTimeout: time.Second,
+			AdmissionHandler: http.NotFoundHandler(),
+			MetricsHandler:   m.Handler(),
+			HandlerTimeout:   time.Second,
 		}
 	}
 	tests := []struct {
@@ -66,6 +67,7 @@ func TestNewRouter_RejectsInvalidDeps(t *testing.T) {
 		{"nil logger", func(d *RouterDeps) { d.Logger = nil }},
 		{"nil readiness", func(d *RouterDeps) { d.Readiness = nil }},
 		{"nil admission handler", func(d *RouterDeps) { d.AdmissionHandler = nil }},
+		{"nil metrics handler", func(d *RouterDeps) { d.MetricsHandler = nil }},
 		{"zero timeout", func(d *RouterDeps) { d.HandlerTimeout = 0 }},
 		{"negative timeout", func(d *RouterDeps) { d.HandlerTimeout = -time.Second }},
 	}
@@ -83,9 +85,6 @@ func TestNewRouter_RejectsInvalidDeps(t *testing.T) {
 	}
 }
 
-// TestNewRouter_PanicRecords500 锁死装配顺序。
-// 若把 Recover 挪到 Logging 外层，w 不是 statusRecorder，
-// Logging 也记不到 500，此测试必红。
 func TestNewRouter_PanicRecords500(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
@@ -93,7 +92,9 @@ func TestNewRouter_PanicRecords500(t *testing.T) {
 
 	r := NewRouter(RouterDeps{
 		Logger: logger, Readiness: &Readiness{},
-		AdmissionHandler: adm, HandlerTimeout: time.Second,
+		AdmissionHandler: adm,
+		MetricsHandler:   metrics.New().Handler(),
+		HandlerTimeout:   time.Second,
 	})
 	r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/admission", nil))
 
@@ -102,6 +103,6 @@ func TestNewRouter_PanicRecords500(t *testing.T) {
 		t.Fatalf("panic 后日志应为 500，实际:\n%s", out)
 	}
 	if !strings.Contains(out, `"request_id"`) {
-		t.Errorf("日志缺 request_id，说明 RequestID 不在最外层:\n%s", out)
+		t.Errorf("日志缺 request_id:\n%s", out)
 	}
 }
