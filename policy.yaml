@@ -1,0 +1,16 @@
+# attest 准入策略配置。
+#
+# 修改此文件后，重启服务（kubectl rollout restart）即可生效，不需要重新编译二进制。
+# 这就是立项书 Non-negotiable 第 4 条的实现："改策略不改代码"。
+#
+# 字段说明：
+#   min_slsa:         要求的最低 SLSA 等级（1/2/3）
+#   allowed_builders: 允许的构建者列表（空表示不限制）
+#   allowed_types:    允许的 BuildType 列表（空表示不限制）
+
+# 要求构建达到 SLSA L3，且由 GitHub Actions 产生
+min_slsa: 3
+allowed_builders:
+  - "https://github.com/actions/runner"
+allowed_types:
+  - "https://slsa.dev/provenance/v1"
