@@ -10,11 +10,19 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/wyh-code26/attest/internal/verify"
 )
 
+// OCIFetcher 从 OCI Registry 拉取 attestation。
+//
+// 验签契约：
+//   - 如果注入了 Verifier，拉到 blob 后必须先验签，验签失败返回 verify.Err*。
+//   - 验签通过后才 json.Unmarshal，保证解析的是已认证的数据。
+//   - Verifier 为 nil 时跳过验签——这是开发模式的逃生舱，生产必须注入。
 type OCIFetcher struct {
 	nameOpts   []name.Option
 	remoteOpts []remote.Option
+	verifier   verify.Verifier
 }
 
 type Option func(*OCIFetcher)
@@ -22,6 +30,12 @@ type Option func(*OCIFetcher)
 func WithInsecure() Option {
 	return func(f *OCIFetcher) {
 		f.nameOpts = append(f.nameOpts, name.Insecure)
+	}
+}
+
+func WithVerifier(v verify.Verifier) Option {
+	return func(f *OCIFetcher) {
+		f.verifier = v
 	}
 }
 
@@ -38,6 +52,7 @@ func (f *OCIFetcher) Fetch(ctx context.Context, imageRef string) (*Provenance, e
 	if err != nil {
 		return nil, fmt.Errorf("parse image ref %q: %w", imageRef, err)
 	}
+	digest := ref.DigestStr()
 
 	remoteOpts := append([]remote.Option{remote.WithContext(ctx)}, f.remoteOpts...)
 	index, err := remote.Referrers(ref, remoteOpts...)
@@ -58,8 +73,6 @@ func (f *OCIFetcher) Fetch(ctx context.Context, imageRef string) (*Provenance, e
 			continue
 		}
 
-		// 绕开 remoteIndex.Image()：v0.22.1 在 Platform 为 nil 时会 panic。
-		// 直接用 remote.Image 按 repo@digest 拉取。
 		attRef, err := name.NewDigest(ref.Context().Name()+"@"+desc.Digest.String(), f.nameOpts...)
 		if err != nil {
 			continue
@@ -78,11 +91,19 @@ func (f *OCIFetcher) Fetch(ctx context.Context, imageRef string) (*Provenance, e
 		if err != nil {
 			continue
 		}
-
 		raw, err := io.ReadAll(rc)
 		rc.Close()
 		if err != nil {
 			continue
+		}
+
+		// 验签必须在 Unmarshal 之前。
+		// 如果验签失败，整个 Fetch 失败——不能"跳过这一条找下一条"，
+		// 因为攻击者可以在同一个镜像上附加多条证明，其中一条有效即可绕过。
+		if f.verifier != nil {
+			if err := f.verifier.Verify(ctx, raw, digest); err != nil {
+				return nil, fmt.Errorf("verify attestation: %w", err)
+			}
 		}
 
 		var prov Provenance
@@ -96,12 +117,6 @@ func (f *OCIFetcher) Fetch(ctx context.Context, imageRef string) (*Provenance, e
 	return nil, ErrAttestationNotFound
 }
 
-// isAttestationType 判断 descriptor 是否指向 in-toto attestation。
-//
-// 兼容三种来源：
-//  1. desc.ArtifactType（OCI 1.1 原生字段）
-//  2. desc.MediaType（部分 registry 复制 artifactType 到 mediaType）
-//  3. desc.Annotations["org.opencontainers.artifact.type"]（OCI 1.0 兼容写法）
 func isAttestationType(desc v1.Descriptor) bool {
 	if string(desc.ArtifactType) == "application/vnd.in-toto+json" {
 		return true

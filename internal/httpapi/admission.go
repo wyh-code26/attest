@@ -15,6 +15,7 @@ import (
 	"github.com/wyh-code26/attest/internal/audit"
 	"github.com/wyh-code26/attest/internal/metrics"
 	"github.com/wyh-code26/attest/internal/policy"
+	"github.com/wyh-code26/attest/internal/verify"
 )
 
 type AdmissionReview struct {
@@ -66,7 +67,6 @@ func (r *AdmissionRequest) GetObjectBytes() ([]byte, error) {
 	return nil, errors.New("neither object nor raw provided")
 }
 
-// AdmissionDeps 是 AdmissionHandler 的显式依赖。
 type AdmissionDeps struct {
 	Logger  *slog.Logger
 	Fetcher attest.Fetcher
@@ -75,8 +75,6 @@ type AdmissionDeps struct {
 	Audit   *audit.Recorder
 }
 
-// AdmissionHandler 返回准入阶段的处理函数。
-// 所有决策路径都通过 Metrics 计数、通过 Audit 落一条结构化日志。
 func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 	if d.Logger == nil {
 		panic("httpapi: AdmissionDeps.Logger must not be nil")
@@ -97,9 +95,7 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			d.Metrics.Record(metrics.ResultErrorMethodNotAllowed)
-			writeJSON(w, d.Logger, http.StatusMethodNotAllowed, map[string]string{
-				"error": "method not allowed",
-			})
+			writeJSON(w, d.Logger, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
 
@@ -133,21 +129,13 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 
 		req := review.Request
 		d.Logger.Info("admission review received",
-			"uid", req.UID,
-			"kind", req.Kind.Kind,
-			"namespace", req.Namespace,
-			"name", req.Name,
-			"operation", req.Operation,
-			"request_id", reqID,
+			"uid", req.UID, "kind", req.Kind.Kind, "namespace", req.Namespace,
+			"name", req.Name, "operation", req.Operation, "request_id", reqID,
 		)
 
 		baseEvent := audit.Event{
-			Time:      time.Now().UTC(),
-			RequestID: reqID,
-			UID:       req.UID,
-			Kind:      req.Kind.Kind,
-			Namespace: req.Namespace,
-			Name:      req.Name,
+			Time: time.Now().UTC(), RequestID: reqID, UID: req.UID,
+			Kind: req.Kind.Kind, Namespace: req.Namespace, Name: req.Name,
 			Operation: req.Operation,
 		}
 
@@ -159,10 +147,8 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 			ev.Reason = string(metrics.ResultDenyNoObject)
 			ev.Message = "cannot extract image reference from object: " + err.Error()
 			recordAudit(d.Logger, d.Audit, ev)
-			d.Logger.Warn("extract container images failed",
-				"reason", "missing_object", "err", err,
-				"request_id", reqID, "uid", req.UID,
-			)
+			d.Logger.Warn("extract container images failed", "reason", "missing_object",
+				"err", err, "request_id", reqID, "uid", req.UID)
 			writeJSON(w, d.Logger, http.StatusOK, denyReview(review.APIVersion, review.Kind, req.UID,
 				"cannot extract image reference from object"))
 			return
@@ -178,10 +164,8 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 				ev.Image = image
 				ev.Message = "image must be pinned by sha256 digest: " + err.Error()
 				recordAudit(d.Logger, d.Audit, ev)
-				d.Logger.Warn("invalid image reference",
-					"reason", "invalid_image_ref", "image", image, "err", err,
-					"request_id", reqID, "uid", req.UID,
-				)
+				d.Logger.Warn("invalid image reference", "reason", "invalid_image_ref",
+					"image", image, "err", err, "request_id", reqID, "uid", req.UID)
 				writeJSON(w, d.Logger, http.StatusOK, denyReview(review.APIVersion, review.Kind, req.UID,
 					fmt.Sprintf("image %q must be pinned by sha256 digest", image)))
 				return
@@ -189,24 +173,18 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 
 			prov, err := d.Fetcher.Fetch(ctx, image)
 			if err != nil {
-				reason := metrics.ResultDenyFetchError
-				logReason := "fetch_error"
-				if errors.Is(err, attest.ErrAttestationNotFound) {
-					reason = metrics.ResultDenyMissingAttestation
-					logReason = "missing_attestation"
-				}
+				reason, logReason := classifyFetchError(err)
 				d.Metrics.Record(reason)
 				ev := baseEvent
 				ev.Allowed = false
 				ev.Reason = string(reason)
 				ev.Image = image
 				ev.Digest = digest
-				ev.Message = "no valid provenance: " + err.Error()
+				ev.Message = "fetch provenance failed: " + err.Error()
 				recordAudit(d.Logger, d.Audit, ev)
-				d.Logger.Warn("fetch provenance failed",
-					"reason", logReason, "image", image, "digest", digest, "err", err,
-					"request_id", reqID, "uid", req.UID,
-				)
+				d.Logger.Warn("fetch provenance failed", "reason", logReason,
+					"image", image, "digest", digest, "err", err,
+					"request_id", reqID, "uid", req.UID)
 				writeJSON(w, d.Logger, http.StatusOK, denyReview(review.APIVersion, review.Kind, req.UID,
 					fmt.Sprintf("no valid provenance for image %q: %v", image, err)))
 				return
@@ -225,12 +203,10 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 				ev.SLSALevel = prov.SLSALevel
 				ev.Message = "policy denied: " + policyReason
 				recordAudit(d.Logger, d.Audit, ev)
-				d.Logger.Warn("policy denied",
-					"reason", "policy_denied", "policy_reason", policyReason,
-					"image", image, "digest", digest,
-					"builder", prov.Builder, "buildType", prov.BuildType, "sourceURI", prov.SourceURI,
-					"request_id", reqID, "uid", req.UID,
-				)
+				d.Logger.Warn("policy denied", "reason", "policy_denied",
+					"policy_reason", policyReason, "image", image, "digest", digest,
+					"builder", prov.Builder, "buildType", prov.BuildType,
+					"sourceURI", prov.SourceURI, "request_id", reqID, "uid", req.UID)
 				writeJSON(w, d.Logger, http.StatusOK, denyReview(review.APIVersion, review.Kind, req.UID,
 					fmt.Sprintf("image %q denied: %s", image, policyReason)))
 				return
@@ -244,13 +220,27 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 		recordAudit(d.Logger, d.Audit, ev)
 
 		writeJSON(w, d.Logger, http.StatusOK, AdmissionReview{
-			APIVersion: review.APIVersion,
-			Kind:       review.Kind,
-			Response: &AdmissionResponse{
-				UID:     req.UID,
-				Allowed: true,
-			},
+			APIVersion: review.APIVersion, Kind: review.Kind,
+			Response: &AdmissionResponse{UID: req.UID, Allowed: true},
 		})
+	}
+}
+
+// classifyFetchError 把 Fetch 的错误映射到指标和日志分类。
+// 签名相关的错误必须归入 deny_invalid_signature，
+// 因为它不是"没拉到"而是"拉到了但不可信"。
+func classifyFetchError(err error) (metrics.Result, string) {
+	switch {
+	case errors.Is(err, attest.ErrAttestationNotFound):
+		return metrics.ResultDenyMissingAttestation, "missing_attestation"
+	case errors.Is(err, verify.ErrSignatureInvalid):
+		return metrics.ResultDenyInvalidSignature, "signature_invalid"
+	case errors.Is(err, verify.ErrDigestMismatch):
+		return metrics.ResultDenyInvalidSignature, "digest_mismatch"
+	case errors.Is(err, verify.ErrIdentityMismatch):
+		return metrics.ResultDenyInvalidSignature, "identity_mismatch"
+	default:
+		return metrics.ResultDenyFetchError, "fetch_error"
 	}
 }
 
@@ -262,15 +252,10 @@ func recordAudit(logger *slog.Logger, rec *audit.Recorder, ev audit.Event) {
 
 func denyReview(apiVersion, kind, uid, message string) AdmissionReview {
 	return AdmissionReview{
-		APIVersion: apiVersion,
-		Kind:       kind,
+		APIVersion: apiVersion, Kind: kind,
 		Response: &AdmissionResponse{
-			UID:     uid,
-			Allowed: false,
-			Result: &Status{
-				Code:    http.StatusForbidden,
-				Message: message,
-			},
+			UID: uid, Allowed: false,
+			Result: &Status{Code: http.StatusForbidden, Message: message},
 		},
 	}
 }

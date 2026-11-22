@@ -1,0 +1,14 @@
+# attest 允许的签名者身份。
+#
+# 每条规则同时绑定 issuer 和 SAN 正则。
+# 只配 issuer 不配 SAN 等于允许任何 GitHub Actions workflow 签名，是安全漏洞。
+
+identities:
+  # 你自己的 GitHub Actions 签名 workflow（未来 CI 用）。
+  - issuer: "https://token.actions.githubusercontent.com"
+    san_regexp: "^https://github\\.com/wyh-code26/attest/\\.github/workflows/sign\\.yaml@refs/tags/v"
+
+  # sigstore-js 官方发布 workflow，用于集成测试的真实 Bundle。
+  # 生产环境部署时必须删掉这一条。
+  - issuer: "https://token.actions.githubusercontent.com"
+    san_regexp: "^https://github\\.com/sigstore/sigstore-js/\\.github/workflows/release\\.yml@refs/heads/main$"

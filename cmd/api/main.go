@@ -16,6 +16,7 @@ import (
 	"github.com/wyh-code26/attest/internal/httpapi"
 	"github.com/wyh-code26/attest/internal/metrics"
 	"github.com/wyh-code26/attest/internal/policy"
+	"github.com/wyh-code26/attest/internal/verify"
 )
 
 func main() {
@@ -48,9 +49,39 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("load policy: %w", err)
 	}
 
+	// 签名验证：按配置构造 Verifier。
+	// AllowUnsigned=true 仅用于本地开发，生产环境必须注入 verifier。
+	var verifier verify.Verifier
+	if cfg.AllowUnsigned {
+		logger.Warn("ATTEST_ALLOW_UNSIGNED=true: signature verification is DISABLED. Do not use in production.")
+	} else {
+		trust, err := verify.NewFileTrustMaterial(cfg.TrustedRootPath)
+		if err != nil {
+			return fmt.Errorf("load trusted root: %w", err)
+		}
+		rules, err := verify.LoadIdentitiesFromFile(cfg.IdentityFilePath)
+		if err != nil {
+			return fmt.Errorf("load identities: %w", err)
+		}
+		verifier, err = verify.NewSigstoreVerifier(trust, rules)
+		if err != nil {
+			return fmt.Errorf("build sigstore verifier: %w", err)
+		}
+		logger.Info("signature verification enabled",
+			"trusted_root", cfg.TrustedRootPath,
+			"identities_file", cfg.IdentityFilePath,
+			"rule_count", len(rules),
+		)
+	}
+
+	opts := []attest.Option{}
+	if verifier != nil {
+		opts = append(opts, attest.WithVerifier(verifier))
+	}
+	ociFetcher := attest.NewOCIFetcher(opts...)
+
 	m := metrics.New()
 	auditRec := audit.NewRecorder(os.Stdout)
-	ociFetcher := attest.NewOCIFetcher()
 
 	srv := &http.Server{
 		Addr: cfg.Addr,

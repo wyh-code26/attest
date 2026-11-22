@@ -1,7 +1,4 @@
 // Package metrics 实现零依赖的 Prometheus 文本格式指标。
-//
-// 不引入 prometheus/client_golang：项目只需要一个 counter，
-// 手写文本格式的成本远低于引入一棵新的依赖树。
 package metrics
 
 import (
@@ -10,7 +7,6 @@ import (
 	"sync"
 )
 
-// Result 是准入决策的最终结果。
 type Result string
 
 const (
@@ -18,6 +14,7 @@ const (
 	ResultDenyNoObject           Result = "deny_no_object"
 	ResultDenyInvalidImage       Result = "deny_invalid_image"
 	ResultDenyMissingAttestation Result = "deny_missing_attestation"
+	ResultDenyInvalidSignature   Result = "deny_invalid_signature"
 	ResultDenyFetchError         Result = "deny_fetch_error"
 	ResultDenyPolicy             Result = "deny_policy"
 	ResultErrorBadRequest        Result = "error_bad_request"
@@ -30,6 +27,7 @@ var allResults = []Result{
 	ResultDenyNoObject,
 	ResultDenyInvalidImage,
 	ResultDenyMissingAttestation,
+	ResultDenyInvalidSignature,
 	ResultDenyFetchError,
 	ResultDenyPolicy,
 	ResultErrorBadRequest,
@@ -45,7 +43,6 @@ var knownResults = func() map[Result]struct{} {
 	return m
 }()
 
-// Metrics 是准入决策计数器，线程安全。
 type Metrics struct {
 	mu      sync.Mutex
 	counter map[Result]int64
@@ -59,8 +56,6 @@ func New() *Metrics {
 	return m
 }
 
-// Record 递增某个结果的计数。
-// result 必须是预定义的 Result 常量，否则 panic。
 func (m *Metrics) Record(result Result) {
 	if _, ok := knownResults[result]; !ok {
 		panic(fmt.Sprintf("metrics: unknown result %q", result))
@@ -70,7 +65,6 @@ func (m *Metrics) Record(result Result) {
 	m.mu.Unlock()
 }
 
-// Handler 返回 /metrics 的 HTTP handler。
 func (m *Metrics) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		m.mu.Lock()
@@ -89,7 +83,6 @@ func (m *Metrics) Handler() http.Handler {
 	})
 }
 
-// Snapshot 返回当前计数的只读拷贝，供测试断言使用。
 func (m *Metrics) Snapshot() map[Result]int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
