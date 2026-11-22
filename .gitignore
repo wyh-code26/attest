@@ -17,3 +17,6 @@
 
 # 本地生成的证书目录
 certs/
+
+# 本地工具
+hack/cosign-linux-amd64
