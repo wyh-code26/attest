@@ -7,13 +7,14 @@ import (
 )
 
 var (
-	addrKey    = "ATTEST_ADDR"
-	apiKey     = "ATTEST_API_KEY"
-	tlsCertKey = "ATTEST_TLS_CERT"
-	tlsKeyKey  = "ATTEST_TLS_KEY"
-	// 独立列出时长字段，避免用 envKeys[2:] 这类依赖数组顺序的切片——
-	// 中间插一个 key 就静默错位，变成"漏测某个字段"且无人察觉。
-	timeoutKeys = []string{
+	addrKey      = "ATTEST_ADDR"
+	apiKey       = "ATTEST_API_KEY"
+	tlsCertKey   = "ATTEST_TLS_CERT"
+	tlsKeyKey    = "ATTEST_TLS_KEY"
+	trustedRoot  = "ATTEST_TRUSTED_ROOT"
+	identityFile = "ATTEST_IDENTITY_FILE"
+	allowUnsign  = "ATTEST_ALLOW_UNSIGNED"
+	timeoutKeys  = []string{
 		"ATTEST_READ_TIMEOUT",
 		"ATTEST_READ_HEADER_TIMEOUT",
 		"ATTEST_WRITE_TIMEOUT",
@@ -23,10 +24,12 @@ var (
 	}
 )
 
-// clearEnv 真正 unset 相关环境变量，测试结束后恢复原值。
 func clearEnv(t *testing.T) {
 	t.Helper()
-	keys := append([]string{addrKey, apiKey, tlsCertKey, tlsKeyKey}, timeoutKeys...)
+	keys := append(
+		[]string{addrKey, apiKey, tlsCertKey, tlsKeyKey, trustedRoot, identityFile, allowUnsign},
+		timeoutKeys...,
+	)
 	for _, k := range keys {
 		old, existed := os.LookupEnv(k)
 		os.Unsetenv(k)
@@ -43,13 +46,23 @@ func clearEnv(t *testing.T) {
 
 func TestLoad_Defaults(t *testing.T) {
 	clearEnv(t)
-
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	want := map[string]struct{ got, exp time.Duration }{
+	strings := map[string]struct{ got, want string }{
+		"Addr":             {cfg.Addr, ":8090"},
+		"TLSCertPath":      {cfg.TLSCertPath, "certs/tls.crt"},
+		"TLSKeyPath":       {cfg.TLSKeyPath, "certs/tls.key"},
+		"TrustedRootPath":  {cfg.TrustedRootPath, "trusted_root.json"},
+		"IdentityFilePath": {cfg.IdentityFilePath, "identities.yaml"},
+	}
+	for name, c := range strings {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", name, c.got, c.want)
+		}
+	}
+	durations := map[string]struct{ got, want time.Duration }{
 		"ReadTimeout":       {cfg.ReadTimeout, 5 * time.Second},
 		"ReadHeaderTimeout": {cfg.ReadHeaderTimeout, 2 * time.Second},
 		"WriteTimeout":      {cfg.WriteTimeout, 10 * time.Second},
@@ -57,27 +70,23 @@ func TestLoad_Defaults(t *testing.T) {
 		"ShutdownTimeout":   {cfg.ShutdownTimeout, 10 * time.Second},
 		"HandlerTimeout":    {cfg.HandlerTimeout, 4 * time.Second},
 	}
-	for name, w := range want {
-		if w.got != w.exp {
-			t.Errorf("%s = %v, want %v", name, w.got, w.exp)
+	for name, d := range durations {
+		if d.got != d.want {
+			t.Errorf("%s = %v, want %v", name, d.got, d.want)
 		}
 	}
-	if cfg.Addr != ":8090" {
-		t.Errorf("Addr = %q, want :8090", cfg.Addr)
-	}
-	if cfg.TLSCertPath != "certs/tls.crt" {
-		t.Errorf("TLSCertPath = %q, want certs/tls.crt", cfg.TLSCertPath)
-	}
-	if cfg.TLSKeyPath != "certs/tls.key" {
-		t.Errorf("TLSKeyPath = %q, want certs/tls.key", cfg.TLSKeyPath)
+	if cfg.AllowUnsigned {
+		t.Error("AllowUnsigned = true, want false")
 	}
 }
 
 func TestLoad_Overrides(t *testing.T) {
 	clearEnv(t)
 	t.Setenv(addrKey, ":9999")
-	t.Setenv(tlsCertKey, "/tmp/cert")
-	t.Setenv(tlsKeyKey, "/tmp/key")
+	t.Setenv(tlsCertKey, "/custom/cert.pem")
+	t.Setenv(tlsKeyKey, "/custom/key.pem")
+	t.Setenv(trustedRoot, "/custom/trusted_root.json")
+	t.Setenv(identityFile, "/custom/identities.yaml")
 	t.Setenv("ATTEST_READ_TIMEOUT", "3s")
 	t.Setenv("ATTEST_READ_HEADER_TIMEOUT", "1s")
 	t.Setenv("ATTEST_HANDLER_TIMEOUT", "2s")
@@ -89,11 +98,17 @@ func TestLoad_Overrides(t *testing.T) {
 	if cfg.Addr != ":9999" {
 		t.Errorf("Addr = %q", cfg.Addr)
 	}
-	if cfg.TLSCertPath != "/tmp/cert" {
+	if cfg.TLSCertPath != "/custom/cert.pem" {
 		t.Errorf("TLSCertPath = %q", cfg.TLSCertPath)
 	}
-	if cfg.TLSKeyPath != "/tmp/key" {
+	if cfg.TLSKeyPath != "/custom/key.pem" {
 		t.Errorf("TLSKeyPath = %q", cfg.TLSKeyPath)
+	}
+	if cfg.TrustedRootPath != "/custom/trusted_root.json" {
+		t.Errorf("TrustedRootPath = %q", cfg.TrustedRootPath)
+	}
+	if cfg.IdentityFilePath != "/custom/identities.yaml" {
+		t.Errorf("IdentityFilePath = %q", cfg.IdentityFilePath)
 	}
 	if cfg.ReadTimeout != 3*time.Second {
 		t.Errorf("ReadTimeout = %v", cfg.ReadTimeout)
@@ -106,25 +121,61 @@ func TestLoad_Overrides(t *testing.T) {
 	}
 }
 
-func TestLoad_AddrSetButEmpty(t *testing.T) {
-	clearEnv(t)
-	t.Setenv(addrKey, "")
-	if _, err := Load(); err == nil {
-		t.Fatal("expected error for empty ATTEST_ADDR")
+func TestLoad_AllowUnsignedParsing(t *testing.T) {
+	tests := []struct {
+		val  string
+		want bool
+		ok   bool
+	}{
+		{"", false, true},
+		{"false", false, true},
+		{"0", false, true},
+		{"true", true, true},
+		{"1", true, true},
+		{"yes", false, false},
+		{"TRUE", false, false},
+	}
+	for _, tt := range tests {
+		t.Run("val="+tt.val, func(t *testing.T) {
+			clearEnv(t)
+			if tt.val != "" {
+				t.Setenv(allowUnsign, tt.val)
+			}
+			cfg, err := Load()
+			if tt.ok {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if cfg.AllowUnsigned != tt.want {
+					t.Errorf("AllowUnsigned = %v, want %v", cfg.AllowUnsigned, tt.want)
+				}
+			} else if err == nil {
+				t.Fatal("expected error")
+			}
+		})
 	}
 }
 
-func TestLoad_TLSPathsSetButEmpty(t *testing.T) {
-	clearEnv(t)
-	t.Setenv(tlsCertKey, "")
-	if _, err := Load(); err == nil {
-		t.Fatal("expected error for empty ATTEST_TLS_CERT")
+// TestLoad_EmptyEnvVars 覆盖所有"显式设为空"的报错路径。
+func TestLoad_EmptyEnvVars(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{"empty addr", addrKey},
+		{"empty tls cert", tlsCertKey},
+		{"empty tls key", tlsKeyKey},
+		{"empty trusted root", trustedRoot},
+		{"empty identity file", identityFile},
 	}
-
-	t.Setenv(tlsCertKey, "valid/path")
-	t.Setenv(tlsKeyKey, "")
-	if _, err := Load(); err == nil {
-		t.Fatal("expected error for empty ATTEST_TLS_KEY")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv(tt.key, "")
+			if _, err := Load(); err == nil {
+				t.Fatalf("expected error for empty %s", tt.key)
+			}
+		})
 	}
 }
 
@@ -153,9 +204,6 @@ func TestLoad_Errors(t *testing.T) {
 	}
 }
 
-// TestLoad_EachTimeoutFieldRejectsInvalid 遍历每个时长字段。
-// 三种失败路径：解析失败、零值、负值。
-// 新增字段只要进 timeoutKeys 就自动获得覆盖，A8 的洞在这里被堵住。
 func TestLoad_EachTimeoutFieldRejectsInvalid(t *testing.T) {
 	for _, key := range timeoutKeys {
 		key := key
