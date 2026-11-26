@@ -21,6 +21,23 @@ spec:
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8090
+        # 显式给绝对路径，不依赖镜像的 WORKDIR。
+        # config.go 的默认值是相对路径 certs/tls.crt，配合 WORKDIR /app 恰好
+        # 等于 /app/certs/tls.crt；但一旦有人改了 WORKDIR 或 entrypoint，
+        # 相对路径就会指向别处，表现为启动即 panic 或 CrashLoopBackOff。
+        # 写死绝对路径并把挂载点对齐，避免这种隐式耦合。
+        env:
+        - name: ATTEST_TLS_CERT
+          value: /app/certs/tls.crt
+        - name: ATTEST_TLS_KEY
+          value: /app/certs/tls.key
+        # 证书来自 Secret，必须等 Secret 就绪才能启动。
+        # Secret 缺失时 Pod 会停在 ContainerCreating（而不是启动后崩溃），
+        # 便于区分"没配证书"和"证书内容有误"两种情况。
+        volumeMounts:
+        - name: tls
+          mountPath: /app/certs
+          readOnly: true
         readinessProbe:
           httpGet:
             path: /readyz
@@ -28,3 +45,18 @@ spec:
             scheme: HTTPS
           initialDelaySeconds: 2
           periodSeconds: 5
+        # 证书缺失时让失败可见：CrashLoopBackOff 比"起来但永远读不了证书"更容易排查。
+        livenessProbe:
+          httpGet:
+            path: /readyz
+            port: 8090
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 20
+      volumes:
+      - name: tls
+        secret:
+          # 由 hack/deploy-tls.sh 创建；也可手工 kubectl create secret。
+          secretName: attest-tls
+          # 证书私钥不应落地成组/全局可读，kubelet 按 0400 挂载。
+          defaultMode: 0400
