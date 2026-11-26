@@ -295,16 +295,16 @@ make kind-setup # Kind 本地环境
 
 ### 离线端到端验收
 
-`hack/e2e/` 是独立 Go module，全程不访问公网：自签一套与生产同格式的信任根
+`hack/e2e/` 是主 module 下的测试包，全程不访问公网：自签一套与生产同格式的信任根
 （Fulcio 链 + CT log + Rekor），签发 Sigstore bundle，推入进程内 OCI registry
 （`go-containerregistry/pkg/registry` + `WithReferrersSupport`），再交给**生产**
 的 `verify.SigstoreVerifier` 与 `attest.OCIFetcher`。
 
 生产代码里没有任何"测试模式"分支，测试信任根只通过 `ATTEST_TRUSTED_ROOT` /
-`ATTEST_IDENTITY_FILE` 注入。测试私钥在运行时于内存生成，只存在
-`hack/e2e/testdata/`（`.gitignore` 排除）。
+`ATTEST_IDENTITY_FILE` 注入。测试私钥与信任根均在 `t.TempDir()` 里实时生成，
+不留任何文件在工作区（见 Design Decisions D8）。
 
-覆盖四条用例：
+覆盖四条 attestation 用例：
 
 | 用例 | 断言 |
 | --- | --- |
@@ -312,6 +312,14 @@ make kind-setup # Kind 本地环境
 | A2 缺失 | `ErrAttestationNotFound` |
 | A3 篡改一字节 | `signature invalid: accepted signatures do not match threshold` |
 | A3 digest 不符 | `provided artifact digest does not match any digest in statement` |
+
+另有三条 A6（fail closed）用例，断言「超时/故障 → 拒绝」而非「请求挂起」：
+
+| 用例 | 断言 |
+| --- | --- |
+| A6 超时返回 deny | registry 永不在响应时，`300ms` 内返回 HTTP 200 + `allowed:false`，reason 含 `context deadline exceeded` |
+| A6 deadline 生效 | 改 `HandlerTimeout` 为 `600ms`，返回耗时随之变化（证明是配置生效而非巧合） |
+| A6 Chart 不变量 | `failurePolicy` 恒为 `Fail` 且非 `.Values` 引用；`timeoutSeconds` 无开关 |
 
 ### 项目结构
 
@@ -344,6 +352,8 @@ docs/runbook.md         运维手册
 | A2 缺失 attestation 拒绝 | 通过（Kind 实测 + 自动化） | `TestE2E_A2_MissingAttestationDenied` |
 | A3 篡改 payload 拒绝 | 通过 | `TestE2E_A3_TamperedPayloadDenied` |
 | A3 digest 不匹配拒绝 | 通过 | `TestE2E_A3_DigestMismatchDenied` |
+| A6 超时/故障 fail closed | 通过 | `TestE2E_A6_TimeoutReturnsDenyNotHang`：`300ms` 超时下返回 `allowed:false`，reason=`context deadline exceeded`；已做反向验证（注入 fail-open 后该测试变红） |
+| A6 Chart 不变量 | 通过 | `TestE2E_A6_ChartFailurePolicyFail`：`failurePolicy: Fail` 为字面量，无 `.Values` 开关 |
 | 镜像无测试产物 | 通过 | 构建后 `find /app -type f` 仅 `attest-api`、`sigstore_trusted_root.json`、`identities.yaml`、`policy.yaml` |
 
 ### 生产部署形态（Kind + cert-manager v1.16.5）
@@ -403,6 +413,146 @@ webhook 不可达时全集群无法创建 Pod，**包括用来排查问题的调
 "Pod 故障"与"Service 路由故障"。
 
 完整诊断树、紧急恢复流程、HPA/PDB 联动陷阱、常见误操作见 **`docs/runbook.md`**。
+
+---
+
+## Design Decisions
+
+本章记录**为什么这样选**。立项书（v1.1）第 9 节要求「实现路径遇阻可换，关键决策写理由不写结论」，
+但冻结的验收标准（第 5 节）与五条 Non-negotiable（第 4 节）不可单方面修改。
+下列条目分三类：**偏离立项书并说明理由**、**立项书未覆盖的补充决策**、**明确不做并给出触发条件**。
+
+### D1 不做 attestation 缓存（偏离立项书 7.1 / 7.3）
+
+**立项书要求**：架构图含 Cache 组件，7.3 要求「缓存只存已验证的 attestation，接口带
+`Invalidate(digest)` 和可配置 TTL，防止撤销后旧证明继续生效」。
+
+**实际实现**：无缓存层。`internal/` 下没有 cache 包，`admission.go:180` 每个请求直接
+`d.Fetcher.Fetch(ctx, image)`。
+
+**理由**：
+
+1. **`Invalidate(digest)` 没有事件源。** registry 不会推送「证明已撤销」的通知，
+   唯一的失效手段就是 TTL 过期。这意味着所谓「防止撤销后旧证明继续生效」在工程上
+   等价于「延迟一个 TTL 才失效」，而立项书设想的主动撤销不存在实现路径。
+2. **当前负载下收益为负。** 准入 Webhook 的真实 QPS 通常低于 1——一个 Pod 创建
+   请求拉一次 registry。缓存带来的收益远小于它引入的风险（内存无上限、缓存穿透、
+   并发惊群）。
+3. **缓存会放大 `failurePolicy: Fail` 的故障面。** 缓存本身成为新的单点：缓存
+   实现有 bug 时，错误命中的是「放行了一个本该拒绝的镜像」，这正是 Non-negotiable
+   第 2 条禁止的方向。
+
+**重新评估的触发条件**（满足任一即应实现）：单实例准入 QPS 持续超过 10；
+出现 registry 限流（HTTP 429）导致 `deny_fetch_error` 占比超过 5%。
+
+实现时正确形态是：**LRU + 内存上限 + 只缓存「已验证通过」的结果**（拒绝结果不缓存，
+避免一次误判被固化一个 TTL），TTL 默认不超过 5 分钟。
+
+### D2 不做在线验签模式（立项书 7.3 「后置」变为「不做」）
+
+**立项书要求**：7.3 明确「verify 包的信任根来源抽象为接口，支持三种模式：在线
+（Fulcio/Rekor）、离线信任根、本地缓存 + 在线回退。**阶段二先实现离线模式，在线模式后置**」。
+
+**实际实现**：只有离线模式 `verify.NewFileTrustMaterial(path)`。
+
+**理由**：立项书自己在第 8 节风险表里写了「Sigstore/Rekor 在线服务在国内不可达或不稳定 →
+准入验签间歇性失败，`failurePolicy: Fail` 放大为部署失败」。这条风险分析的结论是
+**在线验签与 `failurePolicy: Fail` 结构性冲突**：
+
+- 准入路径在 Pod 创建的关键路径上。在线验证失败 = 集群无法创建任何 Pod。
+- 离线根的更新成本极低：Sigstore 信任根每年轮换，改一个文件并重启。
+- 离线模式让 `make e2e` 完全断网可跑，这是本项目测试可复现的基础。
+
+所以「后置」在此处的正确解读是**不做**，而不是「以后补」。立项书识别了风险却没
+推导出「那就不做」，本决策把这段推理补完。
+
+### D3 `timeoutSeconds` 是 10s，不是立项书的 5s
+
+**立项书 A6 原文**：「测试配置 `timeoutSeconds: 5`，断言超时后拒绝而非请求挂起」。
+
+**实际实现**：`chart/templates/validatingwebhookconfiguration.yaml:40` 为 `timeoutSeconds: 10`。
+
+**理由**：立项书写 5s 是在阶段二设想（还没实现 registry 拉取）。现在链路是
+`HandlerTimeout 4s`（`ATTEST_HANDLER_TIMEOUT` 默认值）→ 内部 ctx 到期返回 deny，
+留 6s 余量给 TLS 握手、网络往返和响应串行化。若按 5s 配，正常请求会在
+`HandlerTimeout` 4s 打满时被 apiserver 提前掐断，表现为「无响应」而非「收到 deny」，
+反而削弱 fail closed 的确定性。
+
+**不变的是语义**：超时 → 拒绝，而非挂起。见 `hack/e2e/a6_timeout_test.go`：
+`TestE2E_A6_TimeoutReturnsDenyNotHang` 断言 300ms 超时下 200 + `allowed:false`。
+
+### D4 信任根文件命名为 `sigstore_trusted_root.json`
+
+生产默认信任根叫 `sigstore_trusted_root.json`，不叫 `trusted_root.json`。
+
+**理由**：区分「真实 Sigstore 公共根」与「e2e 测试运行时现生成的自签根」。后者
+历史上曾被固化成 `hack/e2e/testdata/trusted_root.json`，同名会造成误读——看文件名
+分不清是生产根还是测试根，容易把测试根误部署到集群。该 fixture 已删除（见 D8）。
+
+### D5 Chart 必须排除 `cert-manager` 命名空间
+
+`chart/values.yaml:158` 的 `excludeNamespaces` 含 `cert-manager`，这不是省事，是修死锁：
+
+本 Webhook 依赖 cert-manager 签发的证书才能启动。若 cert-manager 自己创建的 Pod 也要
+先过本 Webhook 检查，而 `failurePolicy: Fail` 意味着 Webhook 不可用时集群拒绝创建 Pod，
+就形成循环等待：**Webhook 要等 cert-manager 起来，cert-manager 要等 Webhook 放行**。
+
+这个死锁在 Kind 实测中真实发生过，报错为
+`image "quay.io/jetstack/cert-manager-controller:v1.16.5" must be pinned by sha256 digest`。
+
+同理排除 `kube-system`、`kube-node-lease`、`attest-system`——自举路径上的组件不能
+依赖被自举的对象。
+
+### D6 不引入 `k8s.io/api`，AdmissionReview 用自定义 struct
+
+**立项书 7.3 已定**：自定义 struct，理由「项目叙事是理解准入协议，阶段一只需极小子集」。
+
+**现状**：仍成立。`go.mod` 直接依赖只有三个：`go-containerregistry`、`sigstore-go`、
+`yaml.v3`。`k8s.io/klog/v2` 是 `sigstore-go` 的间接依赖，不是为解析 AdmissionReview 引入的。
+
+**代价与收益**：自定义 struct 意味着 Kubernetes 升级时新增的 AdmissionReview 字段会被
+静默忽略。当前只用 `uid` / `operation` / `object` / `oldObject`，都是 v1 起就稳定的字段，
+风险可接受。若将来需要处理 `dryRun`、`options` 等字段，应重新评估。
+
+### D7 策略文件热加载用 mtime 轮询，不用 fsnotify
+
+**立项书 7.3 已定**：「policy.Loader 接口化，阶段一至三用文件加载 + mtime 轮询
+（标准库），CRD/ConfigMap 后置。不引入 fsnotify」。
+
+**现状**：`cmd/api/main.go:236` 用 `fi.ModTime()` + `fi.Size()` 比对实现热加载。
+证书热加载同理由（`tls.Config.GetCertificate` + `os.Stat` 比对）。
+
+**理由**：轮询间隔是秒级，代价可忽略；`fsnotify` 在容器内面对 ConfigMap 的
+symlink 替换语义容易漏事件，引入一个第三方库换来更脆的行为不划算。
+
+### D8 删除 `hack/e2e/testdata/trusted_root.json` fixture
+
+历史上 `TestWriteFixture` 每次跑测试都用全新随机 PKI 覆写这个**被 git 跟踪**的文件，
+后果是 `go test ./...` 每次都让工作区出现一个内容不同的变更——测试污染工作区，
+且极易被误提交。
+
+该文件**没有任何读取方**：所有 e2e 测试都在 `t.TempDir()` 里现生成信任根。
+现已改为写临时目录，并删除 fixture 与 `.gitignore` 中对应例外行。
+
+### D9 端口 8443 的文档出入
+
+立项书架构图标注 `:8443`，实际监听 `:8090`（`ATTEST_ADDR` 默认值），
+Service 443 → targetPort 8090。8443 是「看起来像 TLS 端口」的习惯写法，
+实际端口对安全属性无影响。**以本文档和 `chart/values.yaml` 为准。**
+
+### D10 A1 用自签信任根验收，而非真实 Sigstore 公共根
+
+**立项书 A1**：「合规 Pod 被放行——集成测试：有效 SLSA L3 证明 + 白名单构建者 → allow」。
+
+**现状**：`TestE2E_A1_ValidAttestationAllowed` 通过，但信任根是运行时自签的。
+
+**为什么这不是缺陷**：A1 要证明的是「验证链路本身正确」——签名验证、证书扩展解析、
+SLSA 等级推导、身份正则匹配全跑通。自签根完全能覆盖这些。用真实公共根能额外证明的
+只有「`sigstore_trusted_root.json` 这份文件解析得对」，而这由
+`TestSigstoreVerifier_RealBundle_*` 四个测试用真实 bundle 独立覆盖。
+
+**已知限制（诚实标注）**：生产环境的 A1 仍未在真实 registry + 真实 Sigstore 根下跑过。
+补验证需要联网权限与可推送的仓库地址，成本与收益需单独评估。
 
 ---
 

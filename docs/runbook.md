@@ -476,3 +476,27 @@ hack/kind-setup.sh --skip-attest
 
 `hack/kind-setup.sh` 里的 kube-proxy RBAC 修复**只对 Kind 成立**，
 生产集群不要执行那段逻辑。
+
+---
+
+## 10. 设计决策索引
+
+遇到「为什么不用缓存」「为什么超时是 10s 不是 5s」「为什么排除 cert-manager 命名空间」
+这类问题时，先看 **`README.md` 的 Design Decisions 章节（D1–D10）**，不要在代码里猜。
+
+| 编号 | 决策 | 与立项书的关系 |
+| --- | --- | --- |
+| D1 | 不做 attestation 缓存 | 偏离 7.1/7.3，给出重新评估的触发条件 |
+| D2 | 不做在线验签模式 | 立项书 7.3「后置」明确为「不做」 |
+| D3 | `timeoutSeconds` 10s（非 5s） | 偏离 A6 原文，语义不变 |
+| D4 | 信任根命名 `sigstore_trusted_root.json` | 补充决策 |
+| D5 | Chart 排除 `cert-manager` 命名空间 | 修真实死锁（见第 1 节） |
+| D6 | 不引入 `k8s.io/api` | 遵循 7.3 |
+| D7 | 策略热加载用 mtime 轮询 | 遵循 7.3 |
+| D8 | 删除 testdata 信任根 fixture | 修测试污染工作区 |
+| D9 | 端口 8090（非 8443） | 文档出入，以 README 为准 |
+| D10 | A1 用自签信任根验收 | 已知限制，待补真实验证 |
+
+**运维最需要知道的两条**：D1 意味着高 QPS 下直连 registry，若出现 `deny_fetch_error`
+飙升应优先查 registry 限流而非怀疑缓存；D5 的 `excludeNamespaces` 不可删，删掉会重建
+Bootstrap 死锁。
