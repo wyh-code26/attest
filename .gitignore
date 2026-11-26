@@ -20,3 +20,11 @@ certs/
 
 # 本地工具
 hack/cosign-linux-amd64
+
+# e2e 测试信任根固化为可复现 fixture（不含私钥，私钥仅在测试运行时生成）
+!hack/e2e/testdata/
+!hack/e2e/testdata/trusted_root.json
+
+# e2e 运行时新生成的私钥绝不入库
+hack/e2e/testdata/*.key
+hack/e2e/testdata/*.pem

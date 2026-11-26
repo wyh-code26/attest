@@ -2,7 +2,7 @@ APP   := attest-api
 CMD   := ./cmd/api
 BIN   := bin/$(APP)
 
-.PHONY: all build run test fmt fmt-fix vet ci clean deploy-tls kind-setup
+.PHONY: all build run test fmt fmt-fix vet ci clean deploy-tls kind-setup e2e
 
 all: ci build
 
@@ -37,6 +37,11 @@ clean:
 #   make deploy-tls APPLY=1
 deploy-tls:
 	./hack/deploy-tls.sh $(if $(APPLY),--apply,)
+
+# 离线端到端验收：自签测试信任根 -> 进程内 OCI registry -> 生产验签链。
+# 全程不访问公网，覆盖 A1 合法、A3 篡改、A3 digest 不匹配、A2 缺失四条用例。
+e2e:
+	go test -race -count=1 -v ./hack/e2e/ -run 'TestE2E_|TestVerifyRealBundle|TestSCT'
 
 # 创建 Kind 集群并修复 kube-proxy RBAC（缺这条绑定会导致 ClusterIP 全不通、
 # admission webhook 超时）。重建 Kind 集群后必须重新执行。

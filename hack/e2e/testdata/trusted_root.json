@@ -1,0 +1,80 @@
+{
+  "mediaType":  "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
+  "tlogs":  [
+    {
+      "baseUrl":  "https://rekor.attest-e2e.invalid",
+      "hashAlgorithm":  "SHA2_256",
+      "publicKey":  {
+        "rawBytes":  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEN3ZJNZ0s3y1zIICOF1YVzH0jifoQM1o0uZNN8OIn01eXFo+6aRQzrjQULB32yeWdiEQ5flo6GDkNmMByM6NJnQ==",
+        "keyDetails":  "PKIX_ECDSA_P256_SHA_256",
+        "validFor":  {
+          "start":  "2026-11-26T04:57:15.458450626Z",
+          "end":  "2026-11-27T07:57:15.458451628Z"
+        }
+      },
+      "logId":  {
+        "keyId":  "CYBJ6qvi5YsPwfXWzfSUxJWzY1dzoBtludQBsr4CYQM="
+      }
+    }
+  ],
+  "certificateAuthorities":  [
+    {
+      "subject":  {
+        "commonName":  "attest-e2e-root"
+      },
+      "uri":  "https://fulcio.attest-e2e.invalid",
+      "certChain":  {
+        "certificates":  [
+          {
+            "rawBytes":  "MIIBqjCCAVCgAwIBAgIBAjAKBggqhkjOPQQDAjAvMRMwEQYDVQQKEwphdHRlc3QgZTJlMRgwFgYDVQQDEw9hdHRlc3QtZTJlLXJvb3QwHhcNMjYxMTI2MDU1NzE1WhcNMjYxMTI3MDY1NzE1WjApMScwJQYDVQQDEx5hdHRlc3QtZTJlLWZ1bGNpby1pbnRlcm1lZGlhdGUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQBGnMso6OyBkf3cpaGzsy6Hfo7pc3k7kO6ECjhlBbszevqcdANIM1VW8Fv5WiRWm8JUxYRr/FKOvevn86YMjJfo2MwYTAOBgNVHQ8BAf8EBAMCAgQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUDYqC/nySMZ2JkfoKvzEjUsEk4eEwHwYDVR0jBBgwFoAUz98hOTBEi36iFvJmRMguz+4xWxwwCgYIKoZIzj0EAwIDSAAwRQIgYlgmOp5v/aqZeOtcr04bemaozbBXnBN2ebrZG7ZCIa0CIQCQvlz97Dh6vKisNe1Zl+ImfotnqMMHiQpPDxhRa67ueQ=="
+          },
+          {
+            "rawBytes":  "MIIBjjCCATWgAwIBAgIBATAKBggqhkjOPQQDAjAvMRMwEQYDVQQKEwphdHRlc3QgZTJlMRgwFgYDVQQDEw9hdHRlc3QtZTJlLXJvb3QwHhcNMjYxMTI2MDU1NzE1WhcNMjYxMTI3MDY1NzE1WjAvMRMwEQYDVQQKEwphdHRlc3QgZTJlMRgwFgYDVQQDEw9hdHRlc3QtZTJlLXJvb3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARSWXO04oMriZdD+iJRtVd9cpFdRw3vex5v1dOH2EBVi9i6OY11q7+uVkW5MPwEigmHyJL1/nQIR70a+1nmjbRAo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUz98hOTBEi36iFvJmRMguz+4xWxwwCgYIKoZIzj0EAwIDRwAwRAIgRwFprRwtGrLrHNapAqq5xPhwOpLZqkaKa3EznOjb2NkCIB1ig+5fW4DE0LbMyXM1wYEodqnJRn7Ov8WgH+jha/Bi"
+          }
+        ]
+      },
+      "validFor":  {
+        "start":  "2026-11-26T04:57:15.458450626Z",
+        "end":  "2026-11-27T07:57:15.458451628Z"
+      },
+      "operator":  "attest-e2e.invalid"
+    }
+  ],
+  "ctlogs":  [
+    {
+      "baseUrl":  "https://ctlog.attest-e2e.invalid",
+      "hashAlgorithm":  "SHA2_256",
+      "publicKey":  {
+        "rawBytes":  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaGfaOOp8c9LNTAS6c3gEdf0GOnvXJHk8MfYGfbw6OtLaFWsxm4HGDCyqIzuBM/mZb+w9WMyws/VJ8N03FO6PpQ==",
+        "keyDetails":  "PKIX_ECDSA_P256_SHA_256",
+        "validFor":  {
+          "start":  "2026-11-26T04:57:15.458450626Z",
+          "end":  "2026-11-27T07:57:15.458451628Z"
+        }
+      },
+      "logId":  {
+        "keyId":  "75xwRgC6ynThoKINljzrP2teNLWejpWVq/wy4sHSm9c="
+      }
+    }
+  ],
+  "timestampAuthorities":  [
+    {
+      "subject":  {
+        "commonName":  "attest-e2e-tsa"
+      },
+      "uri":  "https://tsa.attest-e2e.invalid",
+      "certChain":  {
+        "certificates":  [
+          {
+            "rawBytes":  "MIIBrzCCAVWgAwIBAgIBAzAKBggqhkjOPQQDAjAvMRMwEQYDVQQKEwphdHRlc3QgZTJlMRgwFgYDVQQDEw9hdHRlc3QtZTJlLXJvb3QwHhcNMjYxMTI2MDU1NzE1WhcNMjYxMTI3MDY1NzE1WjAZMRcwFQYDVQQDEw5hdHRlc3QtZTJlLXRzYTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABBNuEsKnLnLnRSvgKPJ+CRt8XJa3HuPtImQNbrIWC0bjJAnVws5JEiGjWMAgMq2Dwd7YVf0uOr5/y5sy1OM84vGjeDB2MA4GA1UdDwEB/wQEAwIChDATBgNVHSUEDDAKBggrBgEFBQcDCDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBSwH6waOGwxfF1G0SUR0BQxjFUGsjAfBgNVHSMEGDAWgBTP3yE5MESLfqIW8mZEyC7P7jFbHDAKBggqhkjOPQQDAgNIADBFAiEAmg4J3nEfZIJeV72Xn4zi9hjxMrOCNGPZnI/yj5VR0PcCIBevUBLsHaQRljAMOFtVU3wrJuG3d7hag5vXmE+oSBw3"
+          }
+        ]
+      },
+      "validFor":  {
+        "start":  "2026-11-26T04:57:15.458450626Z",
+        "end":  "2026-11-27T07:57:15.458451628Z"
+      },
+      "operator":  "attest-e2e.invalid"
+    }
+  ]
+}

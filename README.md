@@ -92,3 +92,41 @@ kube-proxy 故障导致 apiserver 无法访问 webhook 时，整个集群的 Pod
 排查此类故障时，若 `kubectl run` / `kubectl debug` 都被 webhook 挡住无法进集群，
 可临时用 `kubectl port-forward` 直接验证 Pod 是否健康，再由集群外
 （如 `docker exec <node> curl`）测试 ClusterIP，以区分"Pod 故障"和"Service 路由故障"。
+
+## 验收状态
+
+`make e2e` 一条命令跑完离线端到端验收（`hack/e2e/`）：
+
+```bash
+make e2e
+```
+
+测试链路完全离线：用 `hack/e2e/` 自签一套测试信任根（Fulcio 链 + CT log +
+Rekor log），签发与生产格式一致的 Sigstore bundle，推入进程内 OCI registry
+（`go-containerregistry/pkg/registry` + `WithReferrersSupport`），再交给**生产**
+`verify.SigstoreVerifier` 与 `attest.OCIFetcher` 验签和取用。生产代码没有任何
+"测试模式"分支，测试信任根只通过环境变量/文件注入。
+
+| 用例 | 状态 | 证据 |
+| --- | --- | --- |
+| A1 合法 attestation 放行 | 通过（测试环境，自签信任根） | `TestE2E_A1_ValidAttestationAllowed`：验签成功，提取身份 `SLSALevel=3`。**生产环境需用真实 Sigstore 根在真实 Registry 上验证** |
+| A2 缺失 attestation 拒绝 | 通过（Kind 实测 + e2e 自动化） | Kind 集群实测拒绝；`TestE2E_A2_MissingAttestationDenied` 返回 `ErrAttestationNotFound` |
+| A3 篡改 payload 拒绝 | 通过（测试环境 + 单测，两条证据） | `TestE2E_A3_TamperedPayloadDenied`：签名后改一字节 → `signature invalid: accepted signatures do not match threshold` |
+| A3 digest 不匹配拒绝 | 通过（测试环境 + 单测，两条证据） | `TestE2E_A3_DigestMismatchDenied`：签名合法但 subject digest 与镜像不符 → `provided artifact digest does not match any digest in statement` |
+
+测试材料边界：
+
+- 测试信任根固化为 `hack/e2e/testdata/trusted_root.json`，随版本库提交，可复现；
+  测试私钥只在测试运行时于内存中生成，不落盘、不入库（`.gitignore`）。
+- `.dockerignore` 排除 `hack/`、`**/testdata/`、`certs/`、`*.key`、`*.pem`、`*.crt`，
+  Dockerfile 只复制二进制与运行时配置。`TestE2E_NoTestArtifactsInImage` 静态校验
+  Dockerfile 不含 `hack/` 或 `testdata` 的 `COPY`；构建后实测：
+
+  ```bash
+  $ docker run --rm --entrypoint sh attest-api:latest -c \
+      "find /app -type f | grep -iE 'test|e2e'"
+  /app/attest-api          # 仅匹配主程序名中的 "test"
+  ```
+
+  `/app` 实际只有 `attest-api`、`trusted_root.json`、`identities.yaml`、`policy.yaml`，
+  不存在 `testdata/`、`hack/`、`certs/`。

@@ -1,0 +1,14 @@
+# 测试与本地材料绝不进入镜像上下文：
+# e2e 测试信任根、私钥、证书、本地证书目录、CI 与文档。
+hack/
+testdata/
+**/testdata/
+certs/
+*.pem
+*.key
+*.crt
+.git/
+.github/
+bin/
+docs/
+*.md
