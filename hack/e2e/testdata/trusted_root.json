@@ -5,15 +5,15 @@
       "baseUrl":  "https://rekor.attest-e2e.invalid",
       "hashAlgorithm":  "SHA2_256",
       "publicKey":  {
-        "rawBytes":  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEO8rWlss4ko1uByitpjVUrgo2ohAeoCXb1B/qWI7xHNmDMEdH1+Tzn0WtXFPzEAd1xeXKgHPyPzSu6eCp650mnA==",
+        "rawBytes":  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPFSqVfgCaZPWxz1g0UfrbL0MZABV//YJtSdtrGezLj7BReOxLGQ+wvw7IyOMnYaGAMbGUs3K/rJjANGyHnzvAw==",
         "keyDetails":  "PKIX_ECDSA_P256_SHA_256",
         "validFor":  {
-          "start":  "2026-11-26T07:37:21.655148958Z",
-          "end":  "2026-11-27T10:37:21.655149868Z"
+          "start":  "2026-11-26T07:42:48.855054799Z",
+          "end":  "2026-11-27T10:42:48.855055543Z"
         }
       },
       "logId":  {
-        "keyId":  "NRzPyuPMnx8PZU0qMycqgL+xouoBa0wvqOCO+7kYqRo="
+        "keyId":  "TSpclrK/BONOM8KXwKO/ya8U+/bCW5SfhrxAyxs7+pg="
       }
     }
   ],
@@ -26,16 +26,16 @@
       "certChain":  {
         "certificates":  [
           {
-            "rawBytes":  "MIIBqzCCAVCgAwIBAgIBAjAKBggqhkjOPQQDAjAvMRMwEQYDVQQKEwphdHRlc3QgZTJlMRgwFgYDVQQDEw9hdHRlc3QtZTJlLXJvb3QwHhcNMjYxMTI2MDgzNzIxWhcNMjYxMTI3MDkzNzIxWjApMScwJQYDVQQDEx5hdHRlc3QtZTJlLWZ1bGNpby1pbnRlcm1lZGlhdGUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARabavgiF3wa9Rk0FZw1YkW+duAD1VTxXeKjm1OShK11WO8vaYi84tafn3+/4jMzGQdLRp7uny+XsVI3pjyk51no2MwYTAOBgNVHQ8BAf8EBAMCAgQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUKf6nRIR+plLiDonYtV1VFIMHvogwHwYDVR0jBBgwFoAU9H1jy4C/OOevV2JFg64hJgRl4KQwCgYIKoZIzj0EAwIDSQAwRgIhAPCuw9hGf3O49hrI6jy6UDnlBd39ZcjSfrnK9uioYfuzAiEA1JzpNK8VNtyEdTRMsjg4ZxtkfzM1/C+v9dfZc6r8H6k="
+            "rawBytes":  "MIIBqzCCAVCgAwIBAgIBAjAKBggqhkjOPQQDAjAvMRMwEQYDVQQKEwphdHRlc3QgZTJlMRgwFgYDVQQDEw9hdHRlc3QtZTJlLXJvb3QwHhcNMjYxMTI2MDg0MjQ4WhcNMjYxMTI3MDk0MjQ4WjApMScwJQYDVQQDEx5hdHRlc3QtZTJlLWZ1bGNpby1pbnRlcm1lZGlhdGUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARsICHPeYDDH+/Vob9lVOuP0KLtPsg1JsyqDIyoFtuNxpJL5A/Dv/cQBiwwU1WLiI6OHKYKCQUnzNcW+PmjApT/o2MwYTAOBgNVHQ8BAf8EBAMCAgQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUp0f2zg5sb+7FYVwTFhF4JO6UlHMwHwYDVR0jBBgwFoAUGmFpGz+eFXDuF4bGCxlO9rbLMrIwCgYIKoZIzj0EAwIDSQAwRgIhAM8Nnf+obXoRsX6uFjnRLqmDD8CNj1iBcRLu1QLrBuUiAiEA4JXJhyUIMz1V+oihLSjXrebA/sbNPXZ8bmmmhxKTgB4="
           },
           {
-            "rawBytes":  "MIIBkDCCATWgAwIBAgIBATAKBggqhkjOPQQDAjAvMRMwEQYDVQQKEwphdHRlc3QgZTJlMRgwFgYDVQQDEw9hdHRlc3QtZTJlLXJvb3QwHhcNMjYxMTI2MDgzNzIxWhcNMjYxMTI3MDkzNzIxWjAvMRMwEQYDVQQKEwphdHRlc3QgZTJlMRgwFgYDVQQDEw9hdHRlc3QtZTJlLXJvb3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATTLrd8pE/26HPyxYOKLdKXJHH2Ku3QTTXwg+kVKRHZ3NqzZVRrwp5+VNv/qDcunmhJaG1AL+caJDgLvp78k9qco0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQU9H1jy4C/OOevV2JFg64hJgRl4KQwCgYIKoZIzj0EAwIDSQAwRgIhAL0+WqPGlpA8veZrSQOkEkUDj57glcP0cmfpnMOtkfukAiEAtPPifsuX8+ZPirQV5370ZiFn2ae5ctK/+rpqSVRBMYI="
+            "rawBytes":  "MIIBjzCCATWgAwIBAgIBATAKBggqhkjOPQQDAjAvMRMwEQYDVQQKEwphdHRlc3QgZTJlMRgwFgYDVQQDEw9hdHRlc3QtZTJlLXJvb3QwHhcNMjYxMTI2MDg0MjQ4WhcNMjYxMTI3MDk0MjQ4WjAvMRMwEQYDVQQKEwphdHRlc3QgZTJlMRgwFgYDVQQDEw9hdHRlc3QtZTJlLXJvb3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASqipx4izl1O7noyXHiHsgbLueNiQPnupITJcxxJv04U5sEk51WGoXuADw0jNZehe1PGXZhlZQOKM103dz4KOoqo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUGmFpGz+eFXDuF4bGCxlO9rbLMrIwCgYIKoZIzj0EAwIDSAAwRQIhAMtoTmWDRwpMxvyWRLo/AIMLDSuGiGXaVGY9ySdKXHkFAiAvx1weUjR+x0nwCeMR4FsAhYeQWfInSGPwIhNsHA8Yfw=="
           }
         ]
       },
       "validFor":  {
-        "start":  "2026-11-26T07:37:21.655148958Z",
-        "end":  "2026-11-27T10:37:21.655149868Z"
+        "start":  "2026-11-26T07:42:48.855054799Z",
+        "end":  "2026-11-27T10:42:48.855055543Z"
       },
       "operator":  "attest-e2e.invalid"
     }
@@ -45,15 +45,15 @@
       "baseUrl":  "https://ctlog.attest-e2e.invalid",
       "hashAlgorithm":  "SHA2_256",
       "publicKey":  {
-        "rawBytes":  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEOnaOkzdPmF6K19gcR2x2dpYDAKxH1mcbl+/ni/MCwq2v1YnTRJAK3HcZKSQ7lxK0tjoPZvOLalj5C3xZvaLB4w==",
+        "rawBytes":  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEowFaUP+4g1qGScBh9eblQ4RBFLm68SUQnW+tpmw24/wvaFWX+At20sWBBBdibjIvtsDqZW0sunpWnQUxukPuTA==",
         "keyDetails":  "PKIX_ECDSA_P256_SHA_256",
         "validFor":  {
-          "start":  "2026-11-26T07:37:21.655148958Z",
-          "end":  "2026-11-27T10:37:21.655149868Z"
+          "start":  "2026-11-26T07:42:48.855054799Z",
+          "end":  "2026-11-27T10:42:48.855055543Z"
         }
       },
       "logId":  {
-        "keyId":  "GQJoXtO/fbHL20QGDTJqjfdnPgd/IUYgznzYEK5xQBg="
+        "keyId":  "gHj7JtrPzOHHPX2iINflqBXACS2eCf+B9ZLQb1Vrjwg="
       }
     }
   ],
@@ -66,13 +66,13 @@
       "certChain":  {
         "certificates":  [
           {
-            "rawBytes":  "MIIBsDCCAVWgAwIBAgIBAzAKBggqhkjOPQQDAjAvMRMwEQYDVQQKEwphdHRlc3QgZTJlMRgwFgYDVQQDEw9hdHRlc3QtZTJlLXJvb3QwHhcNMjYxMTI2MDgzNzIxWhcNMjYxMTI3MDkzNzIxWjAZMRcwFQYDVQQDEw5hdHRlc3QtZTJlLXRzYTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCC3HAhkhU5DmKfBCxp7ybGWM2vSCouRG99fgb7mlfsrpVMRlR6xx4FggCLsOLA87RvU7FPQ7LRKB+HBqazph6qjeDB2MA4GA1UdDwEB/wQEAwIChDATBgNVHSUEDDAKBggrBgEFBQcDCDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBQKfPk8ncbVpC/JtElWzuSjxgrqtzAfBgNVHSMEGDAWgBT0fWPLgL84569XYkWDriEmBGXgpDAKBggqhkjOPQQDAgNJADBGAiEA+VbGk6q2PIrBekkq6ZGP7V61ZCjzSFXLbVM8aHc9Q6YCIQCZ8GncU8IrTPzCvKfWBTzXtx5WIktFhKIHLZsMo0JKzQ=="
+            "rawBytes":  "MIIBrzCCAVWgAwIBAgIBAzAKBggqhkjOPQQDAjAvMRMwEQYDVQQKEwphdHRlc3QgZTJlMRgwFgYDVQQDEw9hdHRlc3QtZTJlLXJvb3QwHhcNMjYxMTI2MDg0MjQ4WhcNMjYxMTI3MDk0MjQ4WjAZMRcwFQYDVQQDEw5hdHRlc3QtZTJlLXRzYTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABLDJ1dBkEJcxnsDLy6ILGngkt7xVeSV7U8J9zw1ai9OgrW6O5O+CL0DwVj8rmK59wVoqql/VIaV42+YzrP0eC5OjeDB2MA4GA1UdDwEB/wQEAwIChDATBgNVHSUEDDAKBggrBgEFBQcDCDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBQQBoBjZPXGE1N7UBUEf3kW5PSF2TAfBgNVHSMEGDAWgBQaYWkbP54VcO4XhsYLGU72tssysjAKBggqhkjOPQQDAgNIADBFAiALa+WgD4G+StadhH/QWvdlnbzOAmqfaxkOyM5l0sJ4sQIhAKvfufpxEJixE6UWrK0FfiO7w5pm65zRolTmqXOt6kCh"
           }
         ]
       },
       "validFor":  {
-        "start":  "2026-11-26T07:37:21.655148958Z",
-        "end":  "2026-11-27T10:37:21.655149868Z"
+        "start":  "2026-11-26T07:42:48.855054799Z",
+        "end":  "2026-11-27T10:42:48.855055543Z"
       },
       "operator":  "attest-e2e.invalid"
     }
