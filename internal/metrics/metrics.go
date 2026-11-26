@@ -15,11 +15,16 @@ const (
 	ResultDenyInvalidImage       Result = "deny_invalid_image"
 	ResultDenyMissingAttestation Result = "deny_missing_attestation"
 	ResultDenyInvalidSignature   Result = "deny_invalid_signature"
-	ResultDenyFetchError         Result = "deny_fetch_error"
-	ResultDenyPolicy             Result = "deny_policy"
-	ResultErrorBadRequest        Result = "error_bad_request"
-	ResultErrorMethodNotAllowed  Result = "error_method_not_allowed"
-	ResultErrorInternal          Result = "error_internal"
+	// 以下两个结果对应 OCI 拉取的主动防护：
+	// registry 白名单拦截（SSRF）与 attestation 体积超限（内存放大）。
+	// 分开建模是因为“被策略拒”与“拉取出错”在告警语义上必须可区分。
+	ResultDenyRegistryNotAllowed  Result = "deny_registry_not_allowed"
+	ResultDenyAttestationTooLarge Result = "deny_attestation_too_large"
+	ResultDenyFetchError          Result = "deny_fetch_error"
+	ResultDenyPolicy              Result = "deny_policy"
+	ResultErrorBadRequest         Result = "error_bad_request"
+	ResultErrorMethodNotAllowed   Result = "error_method_not_allowed"
+	ResultErrorInternal           Result = "error_internal"
 )
 
 var allResults = []Result{
@@ -28,6 +33,8 @@ var allResults = []Result{
 	ResultDenyInvalidImage,
 	ResultDenyMissingAttestation,
 	ResultDenyInvalidSignature,
+	ResultDenyRegistryNotAllowed,
+	ResultDenyAttestationTooLarge,
 	ResultDenyFetchError,
 	ResultDenyPolicy,
 	ResultErrorBadRequest,

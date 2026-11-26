@@ -154,6 +154,12 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 			return
 		}
 
+		// 记住最后一条镜像的证据，供放行路径写审计。
+		// 多镜像时审计只留一份摘要避免日志爆炸；每一条镜像的具体
+		// 拒绝原因仍会各自单独记录（上面的每个 return 都会写一条）。
+		var lastImage, lastDigest string
+		var lastAtt *attest.Attestation
+
 		for _, image := range images {
 			digest, err := parseImageDigest(image)
 			if err != nil {
@@ -171,7 +177,7 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 				return
 			}
 
-			prov, err := d.Fetcher.Fetch(ctx, image)
+			att, err := d.Fetcher.Fetch(ctx, image)
 			if err != nil {
 				reason, logReason := classifyFetchError(err)
 				d.Metrics.Record(reason)
@@ -190,7 +196,11 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 				return
 			}
 
-			allowed, policyReason := d.Policy.Evaluate(ctx, prov)
+			lastImage, lastDigest, lastAtt = image, digest, att
+
+			// 策略只看已认证身份。att.Provenance 是 payload 自述值，
+			// 仅进入审计日志，不参与任何判定（立项书 Non-negotiable 第 3 条）。
+			allowed, policyReason := d.Policy.Evaluate(ctx, att.Identity)
 			if !allowed {
 				d.Metrics.Record(metrics.ResultDenyPolicy)
 				ev := baseEvent
@@ -199,14 +209,15 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 				ev.Image = image
 				ev.Digest = digest
 				ev.PolicyReason = policyReason
-				ev.Builder = prov.Builder
-				ev.SLSALevel = prov.SLSALevel
+				fillIdentityFields(&ev, att)
 				ev.Message = "policy denied: " + policyReason
 				recordAudit(d.Logger, d.Audit, ev)
 				d.Logger.Warn("policy denied", "reason", "policy_denied",
 					"policy_reason", policyReason, "image", image, "digest", digest,
-					"builder", prov.Builder, "buildType", prov.BuildType,
-					"sourceURI", prov.SourceURI, "request_id", reqID, "uid", req.UID)
+					"source_repo", ev.SourceRepo, "build_signer", ev.BuildSigner,
+					"runner_env", ev.RunnerEnv, "slsa_level", ev.SLSALevel,
+					"declared_builder", ev.DeclaredBuilder,
+					"request_id", reqID, "uid", req.UID)
 				writeJSON(w, d.Logger, http.StatusOK, denyReview(review.APIVersion, review.Kind, req.UID,
 					fmt.Sprintf("image %q denied: %s", image, policyReason)))
 				return
@@ -217,12 +228,39 @@ func AdmissionHandler(d AdmissionDeps) http.HandlerFunc {
 		ev := baseEvent
 		ev.Allowed = true
 		ev.Reason = string(metrics.ResultAllow)
+		// 放行路径也要记录身份证据。
+		// 否则一旦事后发生事故，只能查到"当时放行了"，无法回答
+		// "是哪张证书、哪个源仓库、哪个 workflow 放进去的"。
+		// 审计的价值一半在拒绝路径，另一半就在这里。
+		if lastAtt != nil {
+			fillIdentityFields(&ev, lastAtt)
+			ev.Image = lastImage
+			ev.Digest = lastDigest
+		}
 		recordAudit(d.Logger, d.Audit, ev)
 
 		writeJSON(w, d.Logger, http.StatusOK, AdmissionReview{
 			APIVersion: review.APIVersion, Kind: review.Kind,
 			Response: &AdmissionResponse{UID: req.UID, Allowed: true},
 		})
+	}
+}
+
+// fillIdentityFields 把审计事件里“真值”与“自述值”分开填。
+//
+// 两边的字段刻意不同名：Builder/SLSALevel 来自签名证书，
+// Declared* 来自 payload。混在一起会让事后审计无法判断
+// “当时拦你是因为证书说你是 L2，还是因为你自己声称是 L2”。
+func fillIdentityFields(ev *audit.Event, att *attest.Attestation) {
+	if att.Identity != nil {
+		ev.SLSALevel = att.Identity.SLSALevel()
+		ev.SourceRepo = att.Identity.SourceRepoURI
+		ev.BuildSigner = att.Identity.BuildSignerURI
+		ev.RunnerEnv = att.Identity.RunnerEnv
+	}
+	if att.Provenance != nil {
+		ev.DeclaredBuilder = att.Provenance.Builder
+		ev.DeclaredBuildType = att.Provenance.BuildType
 	}
 }
 
@@ -233,6 +271,12 @@ func classifyFetchError(err error) (metrics.Result, string) {
 	switch {
 	case errors.Is(err, attest.ErrAttestationNotFound):
 		return metrics.ResultDenyMissingAttestation, "missing_attestation"
+	case errors.Is(err, attest.ErrRegistryNotAllowed):
+		// registry 不在白名单：这是配置/策略拒绝，不是"拉取失败"。
+		// 单独归类，否则运维看 deny_fetch_error 会误以为是 registry 短暂不可用。
+		return metrics.ResultDenyRegistryNotAllowed, "registry_not_allowed"
+	case errors.Is(err, attest.ErrAttestationTooLarge):
+		return metrics.ResultDenyAttestationTooLarge, "attestation_too_large"
 	case errors.Is(err, verify.ErrSignatureInvalid):
 		return metrics.ResultDenyInvalidSignature, "signature_invalid"
 	case errors.Is(err, verify.ErrDigestMismatch):
@@ -260,14 +304,31 @@ func denyReview(apiVersion, kind, uid, message string) AdmissionReview {
 	}
 }
 
+// podObjectView 是 Pod spec 的最小视图。
+//
+// 安全契约：凡是能跑容器镜像的字段都必须在此列全，漏一个就是绕过。
+// 历史上只看了 containers，导致 initContainers 放任意未验证镜像直接过审。
+// ephemeralContainers 由 UPDATE 操作（kubectl debug）带来，
+// 虽然当前 webhook 只配了 CREATE，但一旦放开 operations 就是漏洞，所以一并覆盖。
+type containerView struct {
+	Name  string `json:"name"`
+	Image string `json:"image"`
+}
+
 type podObjectView struct {
 	Spec struct {
-		Containers []struct {
-			Image string `json:"image"`
-		} `json:"containers"`
+		InitContainers      []containerView `json:"initContainers"`
+		Containers          []containerView `json:"containers"`
+		EphemeralContainers []containerView `json:"ephemeralContainers"`
 	} `json:"spec"`
 }
 
+// extractContainerImages 收集 Pod 内所有需要校验的容器镜像。
+//
+// 顺序为 initContainers → containers → ephemeralContainers，
+// 保证同样的 Pod 产出稳定的错误信息（排障时不会随机变）。
+// 只要有一个容器镜象为空就整体报错——空镜像不可能有合法 provenance，
+// 放过它等于让一个 “什么都不写” 的字段绕过全部检查。
 func extractContainerImages(req *AdmissionRequest) ([]string, error) {
 	raw, err := req.GetObjectBytes()
 	if err != nil {
@@ -277,15 +338,39 @@ func extractContainerImages(req *AdmissionRequest) ([]string, error) {
 	if err := json.Unmarshal(raw, &pod); err != nil {
 		return nil, fmt.Errorf("unmarshal pod object: %w", err)
 	}
-	if len(pod.Spec.Containers) == 0 {
+
+	groups := []struct {
+		label      string
+		containers []containerView
+	}{
+		{"initContainers", pod.Spec.InitContainers},
+		{"containers", pod.Spec.Containers},
+		{"ephemeralContainers", pod.Spec.EphemeralContainers},
+	}
+
+	total := len(pod.Spec.InitContainers) + len(pod.Spec.Containers) + len(pod.Spec.EphemeralContainers)
+	if total == 0 {
 		return nil, errors.New("pod has no containers")
 	}
-	images := make([]string, 0, len(pod.Spec.Containers))
-	for _, c := range pod.Spec.Containers {
-		if c.Image == "" {
-			return nil, errors.New("container image is empty")
+
+	images := make([]string, 0, total)
+	seen := make(map[string]struct{}, total)
+	for _, g := range groups {
+		for _, c := range g.containers {
+			if c.Image == "" {
+				if c.Name != "" {
+					return nil, fmt.Errorf("image is empty for container %q in %s", c.Name, g.label)
+				}
+				return nil, fmt.Errorf("image is empty in %s", g.label)
+			}
+			// 同一个镜像在多个字段里重复出现时只验一次：
+			// 验签是网络 + 密码学开销，去重避免侧载 Pod 把单次请求放大成 N 次校验。
+			if _, ok := seen[c.Image]; ok {
+				continue
+			}
+			seen[c.Image] = struct{}{}
+			images = append(images, c.Image)
 		}
-		images = append(images, c.Image)
 	}
 	return images, nil
 }

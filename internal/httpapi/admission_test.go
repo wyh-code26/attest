@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,12 +15,33 @@ import (
 	"github.com/wyh-code26/attest/internal/audit"
 	"github.com/wyh-code26/attest/internal/metrics"
 	"github.com/wyh-code26/attest/internal/policy"
+	"github.com/wyh-code26/attest/internal/verify"
 )
 
+// denyPolicy 永远返回拒绝，用于测试 policy denied 路径。
 type denyPolicy struct{}
 
-func (p *denyPolicy) Evaluate(_ context.Context, _ *attest.Provenance) (bool, string) {
+func (p *denyPolicy) Evaluate(_ context.Context, _ *verify.VerifiedIdentity) (bool, string) {
 	return false, "test-policy-denied"
+}
+
+// observingPolicy 记录策略实际收到的身份，用于验证准入层没有读 payload。
+type observingPolicy struct {
+	got *verify.VerifiedIdentity
+}
+
+func (p *observingPolicy) Evaluate(_ context.Context, id *verify.VerifiedIdentity) (bool, string) {
+	p.got = id
+	return true, ""
+}
+
+// errorFetcher 永远返回预设的错误，用于测试 Fetch 的各类失败路径。
+type errorFetcher struct {
+	err error
+}
+
+func (f *errorFetcher) Fetch(_ context.Context, _ string) (*attest.Attestation, error) {
+	return nil, f.err
 }
 
 const (
@@ -47,11 +70,24 @@ type testEnv struct {
 	handler http.HandlerFunc
 	metrics *metrics.Metrics
 	audit   *bytes.Buffer
+	logs    *bytes.Buffer
+}
+
+// validIdentity 返回一个合规的已认证身份（github-hosted + build config → L3）。
+func validIdentity() *verify.VerifiedIdentity {
+	return &verify.VerifiedIdentity{
+		Issuer:           "https://token.actions.githubusercontent.com",
+		BuildSignerURI:   "https://github.com/wyh-code26/attest/.github/workflows/release.yml@refs/tags/v1.0.0",
+		SourceRepoURI:    "https://github.com/wyh-code26/attest",
+		SourceRepoDigest: "dae8bd8eb433a4147b4655c00fe73e0f22bc0fb1",
+		BuildConfigURI:   "https://github.com/wyh-code26/attest/.github/workflows/release.yml@refs/tags/v1.0.0",
+		RunnerEnv:        verify.RunnerEnvGitHubHosted,
+	}
 }
 
 func newTestEnv(pol policy.Policy, fakeMap map[string]*attest.Provenance) *testEnv {
 	logger := discardLogger()
-	fakeFetcher := attest.NewFakeFetcher(fakeMap)
+	fakeFetcher := attest.NewFakeFetcherWithIdentities(fakeMap, identityMap(fakeMap))
 	m := metrics.New()
 	auditBuf := &bytes.Buffer{}
 	auditRec := audit.NewRecorder(auditBuf)
@@ -64,6 +100,34 @@ func newTestEnv(pol policy.Policy, fakeMap map[string]*attest.Provenance) *testE
 		Audit:   auditRec,
 	})
 	return &testEnv{handler: h, metrics: m, audit: auditBuf}
+}
+
+// newTestEnvWithFetcher 允许注入任意 Fetcher，并把 slog 输出重定向到 buffer。
+// 专门用于测试 Fetch 的错误分类——需要同时断言 metrics、审计日志和 slog 日志。
+func newTestEnvWithFetcher(fetcher attest.Fetcher, pol policy.Policy) *testEnv {
+	m := metrics.New()
+	auditBuf := &bytes.Buffer{}
+	logsBuf := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(logsBuf, nil))
+
+	h := AdmissionHandler(AdmissionDeps{
+		Logger:  logger,
+		Fetcher: fetcher,
+		Policy:  pol,
+		Metrics: m,
+		Audit:   audit.NewRecorder(auditBuf),
+	})
+	return &testEnv{handler: h, metrics: m, audit: auditBuf, logs: logsBuf}
+}
+
+// identityMap 为 fakeMap 里的每个镜像配一份合规身份，
+// 让"放行"路径测试不会被身份缺失挡住。
+func identityMap(data map[string]*attest.Provenance) map[string]*verify.VerifiedIdentity {
+	out := make(map[string]*verify.VerifiedIdentity, len(data))
+	for k := range data {
+		out[k] = validIdentity()
+	}
+	return out
 }
 
 func defaultFakeMap() map[string]*attest.Provenance {
@@ -158,6 +222,77 @@ func TestAdmissionHandler_Deny_PolicyDenied(t *testing.T) {
 	}
 }
 
+// ---- 签名错误的三条子路径 ----
+
+func TestAdmissionHandler_Deny_SignatureInvalid(t *testing.T) {
+	fetcher := &errorFetcher{err: fmt.Errorf("test: %w", verify.ErrSignatureInvalid)}
+	env := newTestEnvWithFetcher(fetcher, &policy.AllowAll{})
+	body := buildAdmissionRequest("t-sig", validImage)
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
+
+	var resp AdmissionReview
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Response.Allowed {
+		t.Fatal("expected deny")
+	}
+	if snap := env.metrics.Snapshot(); snap[metrics.ResultDenyInvalidSignature] != 1 {
+		t.Errorf("metrics deny_invalid_signature = %d, want 1", snap[metrics.ResultDenyInvalidSignature])
+	}
+	if !strings.Contains(env.audit.String(), `"reason":"deny_invalid_signature"`) {
+		t.Errorf("audit missing reason:\n%s", env.audit.String())
+	}
+	if !strings.Contains(env.logs.String(), `"reason":"signature_invalid"`) {
+		t.Errorf("slog missing signature_invalid reason:\n%s", env.logs.String())
+	}
+}
+
+func TestAdmissionHandler_Deny_DigestMismatch(t *testing.T) {
+	fetcher := &errorFetcher{err: fmt.Errorf("test: %w", verify.ErrDigestMismatch)}
+	env := newTestEnvWithFetcher(fetcher, &policy.AllowAll{})
+	body := buildAdmissionRequest("t-dig", validImage)
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
+
+	var resp AdmissionReview
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Response.Allowed {
+		t.Fatal("expected deny")
+	}
+	if snap := env.metrics.Snapshot(); snap[metrics.ResultDenyInvalidSignature] != 1 {
+		t.Errorf("metrics = %d, want 1", snap[metrics.ResultDenyInvalidSignature])
+	}
+	if !strings.Contains(env.audit.String(), `"reason":"deny_invalid_signature"`) {
+		t.Errorf("audit missing reason:\n%s", env.audit.String())
+	}
+	if !strings.Contains(env.logs.String(), `"reason":"digest_mismatch"`) {
+		t.Errorf("slog missing digest_mismatch reason:\n%s", env.logs.String())
+	}
+}
+
+func TestAdmissionHandler_Deny_IdentityMismatch(t *testing.T) {
+	fetcher := &errorFetcher{err: fmt.Errorf("test: %w", verify.ErrIdentityMismatch)}
+	env := newTestEnvWithFetcher(fetcher, &policy.AllowAll{})
+	body := buildAdmissionRequest("t-id", validImage)
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
+
+	var resp AdmissionReview
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Response.Allowed {
+		t.Fatal("expected deny")
+	}
+	if snap := env.metrics.Snapshot(); snap[metrics.ResultDenyInvalidSignature] != 1 {
+		t.Errorf("metrics = %d, want 1", snap[metrics.ResultDenyInvalidSignature])
+	}
+	if !strings.Contains(env.audit.String(), `"reason":"deny_invalid_signature"`) {
+		t.Errorf("audit missing reason:\n%s", env.audit.String())
+	}
+	if !strings.Contains(env.logs.String(), `"reason":"identity_mismatch"`) {
+		t.Errorf("slog missing identity_mismatch reason:\n%s", env.logs.String())
+	}
+}
+
 func TestAdmissionHandler_InvalidJSON(t *testing.T) {
 	env := newTestEnv(&policy.AllowAll{}, defaultFakeMap())
 	w := httptest.NewRecorder()
@@ -188,5 +323,99 @@ func TestAdmissionHandler_WrongMethod(t *testing.T) {
 	}
 	if snap := env.metrics.Snapshot(); snap[metrics.ResultErrorMethodNotAllowed] != 1 {
 		t.Errorf("metrics error_method_not_allowed = %d, want 1", snap[metrics.ResultErrorMethodNotAllowed])
+	}
+}
+
+// ---- H2: initContainers / ephemeralContainers 不能被绕过 ----
+
+const evilDigest = "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+
+func buildPodRequest(uid string, spec string) string {
+	req := AdmissionReview{
+		APIVersion: "admission.k8s.io/v1",
+		Kind:       "AdmissionReview",
+		Request: &AdmissionRequest{
+			UID:       uid,
+			Kind:      GroupVersionKind{Kind: "Pod"},
+			Namespace: "default",
+			Name:      "test-pod",
+			Operation: "CREATE",
+			Object:    json.RawMessage(`{"spec":` + spec + `}`),
+		},
+	}
+	b, _ := json.Marshal(req)
+	return string(b)
+}
+
+// 主容器合法、initContainer 未验证——必须拒绝。
+// 这是准入控制器最典型的绕过路径。
+func TestAdmissionHandler_Deny_InitContainerUnverified(t *testing.T) {
+	env := newTestEnv(&policy.AllowAll{}, defaultFakeMap())
+	body := buildPodRequest("t-init",
+		`{"initContainers":[{"name":"init","image":"evil@`+evilDigest+`"}],`+
+			`"containers":[{"name":"main","image":"`+validImage+`"}]}`)
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
+
+	var resp AdmissionReview
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Response.Allowed {
+		t.Fatal("expected deny: initContainer image has no attestation")
+	}
+	if snap := env.metrics.Snapshot(); snap[metrics.ResultDenyMissingAttestation] != 1 {
+		t.Errorf("metrics = %d, want 1", snap[metrics.ResultDenyMissingAttestation])
+	}
+}
+
+// ephemeralContainers 同样必须被检查（kubectl debug 路径）。
+func TestAdmissionHandler_Deny_EphemeralContainerUnverified(t *testing.T) {
+	env := newTestEnv(&policy.AllowAll{}, defaultFakeMap())
+	body := buildPodRequest("t-eph",
+		`{"containers":[{"name":"main","image":"`+validImage+`"}],`+
+			`"ephemeralContainers":[{"name":"dbg","image":"evil@`+evilDigest+`"}]}`)
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
+
+	var resp AdmissionReview
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Response.Allowed {
+		t.Fatal("expected deny: ephemeralContainer image has no attestation")
+	}
+}
+
+// 三类容器全部合法时应放行——证明修复没有误伤。
+func TestAdmissionHandler_Allow_AllContainerKinds(t *testing.T) {
+	env := newTestEnv(&policy.AllowAll{}, defaultFakeMap())
+	body := buildPodRequest("t-ok",
+		`{"initContainers":[{"name":"init","image":"`+validImage+`"}],`+
+			`"containers":[{"name":"main","image":"`+validImage+`"}],`+
+			`"ephemeralContainers":[{"name":"dbg","image":"`+validImage+`"}]}`)
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
+
+	var resp AdmissionReview
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if !resp.Response.Allowed {
+		t.Fatalf("expected allow, got deny: %s", resp.Response.Result.Message)
+	}
+}
+
+// initContainer 镜像为空字符串时不能当作"无镜像"放过。
+func TestAdmissionHandler_Deny_EmptyInitImage(t *testing.T) {
+	env := newTestEnv(&policy.AllowAll{}, defaultFakeMap())
+	body := buildPodRequest("t-empty-init",
+		`{"initContainers":[{"name":"init","image":""}],`+
+			`"containers":[{"name":"main","image":"`+validImage+`"}]}`)
+	w := httptest.NewRecorder()
+	env.handler.ServeHTTP(w, httptest.NewRequest("POST", "/admission", bytes.NewBufferString(body)))
+
+	var resp AdmissionReview
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Response.Allowed {
+		t.Fatal("expected deny: empty initContainer image")
+	}
+	if !strings.Contains(env.audit.String(), "initContainers") {
+		// 响应给客户端的消息刻意脱敏，可定位的原因落在审计与 slog 里。
+		t.Errorf("audit should name the offending field, got %q", env.audit.String())
 	}
 }

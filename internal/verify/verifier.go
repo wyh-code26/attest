@@ -16,10 +16,14 @@ import (
 //   - Bundle 绑定的 artifact digest 等于 expectedDigest；
 //   - Bundle 的证书身份匹配某条 IdentityRule。
 //
+// 验证通过时，除了返回 nil error，还必须返回从签名证书里提取出的
+// VerifiedIdentity。这是策略层唯一允许读取的身份来源——
+// attestation payload 里的 builder/buildType 是推送方自填的，不可信。
+//
 // expectedDigest 格式为 "sha256:<64 hex>"。
 // 返回错误时，调用方应通过 errors.Is 判断具体的失败类型。
 type Verifier interface {
-	Verify(ctx context.Context, bundleJSON []byte, expectedDigest string) error
+	Verify(ctx context.Context, bundleJSON []byte, expectedDigest string) (*VerifiedIdentity, error)
 }
 
 // IdentityRule 是允许的签名者身份。

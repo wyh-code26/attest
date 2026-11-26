@@ -37,9 +37,12 @@ func TestSigstoreVerifier_TrustUnavailableIsFailClosed(t *testing.T) {
 		t.Fatalf("build verifier: %v", err)
 	}
 
-	err = v.Verify(context.Background(), []byte("{}"), "sha256:"+strings.Repeat("0", 64))
+	id, err := v.Verify(context.Background(), []byte("{}"), "sha256:"+strings.Repeat("0", 64))
 	if !errors.Is(err, ErrSignatureInvalid) {
 		t.Errorf("expected ErrSignatureInvalid, got %v", err)
+	}
+	if id != nil {
+		t.Errorf("failed verification must not return an identity, got %+v", id)
 	}
 }
 

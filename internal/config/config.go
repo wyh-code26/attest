@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,6 +30,18 @@ type Config struct {
 	TrustedRootPath  string // 离线信任根 JSON 路径
 	IdentityFilePath string // 身份 allowlist YAML 路径
 	AllowUnsigned    bool   // 仅开发模式：跳过验签
+	// AllowUnsignedAndSkipPolicy 是 AllowUnsigned 之上的第二道闸门。
+	// 跳过验签后没有 VerifiedIdentity，策略无法判定，必须显式再关一次策略，
+	// 否则服务要么全拒（看不出是配置问题），要么被迫写"空身份放行"的漏洞。
+	AllowUnsignedAndSkipPolicy bool
+
+	// OCI 拉取防护。
+	// AllowedRegistries 是 registry host 白名单，逗号分隔。
+	// 为空表示不限制——仅限开发，生产必须配置，否则任何能创建 Pod 的用户
+	// 都能借准入服务向任意 host 发起出站请求（SSRF）。
+	AllowedRegistries []string
+	// MaxAttestationBytes 是单个 attestation layer 的读取上限，单位字节。
+	MaxAttestationBytes int64
 }
 
 type timeoutField struct {
@@ -91,6 +105,38 @@ func Load() (Config, error) {
 		cfg.AllowUnsigned = true
 	default:
 		return Config{}, fmt.Errorf("ATTEST_ALLOW_UNSIGNED must be true/false, got %q", os.Getenv("ATTEST_ALLOW_UNSIGNED"))
+	}
+
+	switch os.Getenv("ATTEST_ALLOW_UNSIGNED_AND_SKIP_POLICY") {
+	case "", "false", "0":
+		cfg.AllowUnsignedAndSkipPolicy = false
+	case "true", "1":
+		cfg.AllowUnsignedAndSkipPolicy = true
+	default:
+		return Config{}, fmt.Errorf("ATTEST_ALLOW_UNSIGNED_AND_SKIP_POLICY must be true/false, got %q",
+			os.Getenv("ATTEST_ALLOW_UNSIGNED_AND_SKIP_POLICY"))
+	}
+
+	// 注册表白名单：逗号分隔，去除空白与空项。
+	cfg.MaxAttestationBytes = 4 << 20
+	if v, ok := os.LookupEnv("ATTEST_ALLOWED_REGISTRIES"); ok {
+		for _, h := range strings.Split(v, ",") {
+			h = strings.TrimSpace(h)
+			if h == "" {
+				continue
+			}
+			cfg.AllowedRegistries = append(cfg.AllowedRegistries, h)
+		}
+	}
+	if v, ok := os.LookupEnv("ATTEST_MAX_ATTESTATION_BYTES"); ok {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("parse ATTEST_MAX_ATTESTATION_BYTES: %w", err)
+		}
+		if n <= 0 {
+			return Config{}, fmt.Errorf("ATTEST_MAX_ATTESTATION_BYTES must be positive, got %d", n)
+		}
+		cfg.MaxAttestationBytes = n
 	}
 
 	fields := []timeoutField{

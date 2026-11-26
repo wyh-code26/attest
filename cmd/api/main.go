@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/wyh-code26/attest/internal/attest"
 	"github.com/wyh-code26/attest/internal/audit"
@@ -54,6 +55,20 @@ func run(logger *slog.Logger) error {
 	var verifier verify.Verifier
 	if cfg.AllowUnsigned {
 		logger.Warn("ATTEST_ALLOW_UNSIGNED=true: signature verification is DISABLED. Do not use in production.")
+		// 未验签时拿不到 VerifiedIdentity，策略层无法做任何有意义的判定。
+		// 直接拒绝启动比“跑起来但全部 deny”或“跑起来且全部 allow”都安全：
+		// 前者会让人误以为服务坏了，后者是零安全。
+		// 确实需要跳过策略时，请额外设置 ATTEST_ALLOW_UNSIGNED_AND_SKIP_POLICY=true。
+		if !cfg.AllowUnsignedAndSkipPolicy {
+			return fmt.Errorf("ATTEST_ALLOW_UNSIGNED=true but ATTEST_ALLOW_UNSIGNED_AND_SKIP_POLICY=false: " +
+				"policy evaluation requires a verified identity; set ATTEST_ALLOW_UNSIGNED_AND_SKIP_POLICY=true for local dev")
+		}
+		logger.Warn("ATTEST_ALLOW_UNSIGNED_AND_SKIP_POLICY=true: policy evaluation is DISABLED. Do not use in production.")
+		verifier = nil
+		// 未验签就没有 VerifiedIdentity，任何真实策略都会全拒。
+		// 用 AllowAll 显式替代，让"策略被关掉"这件事在代码里可见，
+		// 而不是靠 SimplePolicy 默默放行空身份。
+		pol = &policy.AllowAll{}
 	} else {
 		trust, err := verify.NewFileTrustMaterial(cfg.TrustedRootPath)
 		if err != nil {
@@ -78,6 +93,26 @@ func run(logger *slog.Logger) error {
 	if verifier != nil {
 		opts = append(opts, attest.WithVerifier(verifier))
 	}
+	// OCI 拉取防护：registry 白名单 + 读取上限 + 带超时的 transport。
+	// 不配白名单仍能跑，但会打警告——因为它意味着准入服务可以代他人访问任意 host。
+	if len(cfg.AllowedRegistries) > 0 {
+		opts = append(opts, attest.WithAllowedRegistries(cfg.AllowedRegistries...))
+		logger.Info("registry allowlist enabled", "registries", cfg.AllowedRegistries)
+	} else {
+		logger.Warn("ATTEST_ALLOWED_REGISTRIES is empty: admission service will dial any registry host referenced by a Pod. Set it in production.")
+	}
+	opts = append(opts,
+		attest.WithMaxAttestationBytes(cfg.MaxAttestationBytes),
+		attest.WithTransport(&http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			MaxIdleConns:          32,
+			MaxIdleConnsPerHost:   8,
+			IdleConnTimeout:       30 * time.Second,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ResponseHeaderTimeout: 3 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}),
+	)
 	ociFetcher := attest.NewOCIFetcher(opts...)
 
 	m := metrics.New()

@@ -71,9 +71,33 @@ func TestSigstoreVerifier_RealBundle_Valid(t *testing.T) {
 		t.Fatalf("read bundle: %v", err)
 	}
 
-	err = v.Verify(context.Background(), bundleJSON, testBundleDigest)
+	id, err := v.Verify(context.Background(), bundleJSON, testBundleDigest)
 	if err != nil {
 		t.Fatalf("valid bundle should pass, got: %v", err)
+	}
+	if id == nil {
+		t.Fatal("valid bundle must return a verified identity, got nil")
+	}
+	// 断言真实证书里的值，确保 OID 提取确实工作而不是返回空结构体。
+	if id.Issuer != testBundleIssuer {
+		t.Errorf("Issuer = %q, want %q", id.Issuer, testBundleIssuer)
+	}
+	if id.RunnerEnv != "github-hosted" {
+		t.Errorf("RunnerEnv = %q, want github-hosted", id.RunnerEnv)
+	}
+	if !strings.Contains(id.BuildSignerURI, "sigstore/sigstore-js") {
+		t.Errorf("BuildSignerURI = %q, want it to reference sigstore/sigstore-js", id.BuildSignerURI)
+	}
+	if id.SourceRepoURI != "https://github.com/sigstore/sigstore-js" {
+		t.Errorf("SourceRepoURI = %q", id.SourceRepoURI)
+	}
+	if id.SourceRepoDigest != "dae8bd8eb433a4147b4655c00fe73e0f22bc0fb1" {
+		t.Errorf("SourceRepoDigest = %q", id.SourceRepoDigest)
+	}
+	// 该证书带 build config（1.18 = workflow 引用），runner 是 github-hosted，
+	// 按规则应为 L3。
+	if got := id.SLSALevel(); got != SLSALevel3 {
+		t.Errorf("SLSALevel = %d, want %d", got, SLSALevel3)
 	}
 }
 
@@ -95,7 +119,7 @@ func TestSigstoreVerifier_RealBundle_WrongDigest(t *testing.T) {
 	bundleJSON, _ := os.ReadFile(bundlePath)
 
 	wrongDigest := "sha512:" + strings.Repeat("0", 128)
-	err = v.Verify(context.Background(), bundleJSON, wrongDigest)
+	_, err = v.Verify(context.Background(), bundleJSON, wrongDigest)
 	if !errors.Is(err, ErrDigestMismatch) {
 		t.Errorf("expected ErrDigestMismatch, got %v", err)
 	}
@@ -119,7 +143,7 @@ func TestSigstoreVerifier_RealBundle_WrongIdentity(t *testing.T) {
 
 	bundleJSON, _ := os.ReadFile(bundlePath)
 
-	err = v.Verify(context.Background(), bundleJSON, testBundleDigest)
+	_, err = v.Verify(context.Background(), bundleJSON, testBundleDigest)
 	if !errors.Is(err, ErrIdentityMismatch) {
 		t.Errorf("expected ErrIdentityMismatch, got %v", err)
 	}
@@ -161,7 +185,7 @@ func TestSigstoreVerifier_RealBundle_TamperedBundle(t *testing.T) {
 		tampered[payloadStart+2] = 'A'
 	}
 
-	err = v.Verify(context.Background(), tampered, testBundleDigest)
+	_, err = v.Verify(context.Background(), tampered, testBundleDigest)
 	if err == nil {
 		t.Fatal("tampered bundle must fail, got nil")
 	}

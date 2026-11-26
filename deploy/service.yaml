@@ -2,7 +2,8 @@ apiVersion: v1
 kind: Service
 metadata:
   name: attest-admission
-  namespace: default
+  # 与 deployment.yaml 保持同一命名空间，否则 webhook 的 Service 引用会落到 default。
+  namespace: attest-system
 spec:
   selector:
     app: attest-admission

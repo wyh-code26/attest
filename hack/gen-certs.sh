@@ -25,13 +25,18 @@ keyUsage = nonRepudiation, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 [alt_names]
-DNS.1 = attest-admission.default.svc
-DNS.2 = attest-admission.default.svc.cluster.local
-DNS.3 = localhost
+# 服务部署在 attest-system，SAN 必须覆盖该命名空间下的两种 FQDN，
+# 否则 apiserver 访问 webhook 服务时会因证书主机名不匹配而握手失败，
+# 在 failurePolicy: Fail 下表现为全集群 Pod 创建被阻断。
+DNS.1 = attest-admission.attest-system.svc
+DNS.2 = attest-admission.attest-system.svc.cluster.local
+DNS.3 = attest-admission.default.svc
+DNS.4 = attest-admission.default.svc.cluster.local
+DNS.5 = localhost
 IP.1 = 127.0.0.1
 EOF
 
-openssl req -new -key "$OUT_DIR/tls.key" -subj "/CN=attest-admission.default.svc" \
+openssl req -new -key "$OUT_DIR/tls.key" -subj "/CN=attest-admission.attest-system.svc" \
   -out "$OUT_DIR/tls.csr" -config "$OUT_DIR/csr.conf"
 
 # 4. 用 CA 签发服务端证书

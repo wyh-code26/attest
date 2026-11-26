@@ -28,11 +28,11 @@ func NewSigstoreVerifier(trust TrustMaterialProvider, rules []IdentityRule) (Ver
 	return &sigstoreVerifier{trust: trust, rules: rules}, nil
 }
 
-func (v *sigstoreVerifier) Verify(ctx context.Context, bundleJSON []byte, expectedDigest string) error {
+func (v *sigstoreVerifier) Verify(ctx context.Context, bundleJSON []byte, expectedDigest string) (*VerifiedIdentity, error) {
 	tm, err := v.trust.Get(ctx)
 	if err != nil {
 		// 拿不到信任根 = 无法验证 = 拒绝。不能降级为放行。
-		return fmt.Errorf("%w: get trusted material: %v", ErrSignatureInvalid, err)
+		return nil, fmt.Errorf("%w: get trusted material: %v", ErrSignatureInvalid, err)
 	}
 
 	verifier, err := verify.NewVerifier(tm,
@@ -42,17 +42,17 @@ func (v *sigstoreVerifier) Verify(ctx context.Context, bundleJSON []byte, expect
 		verify.WithObserverTimestamps(1),
 	)
 	if err != nil {
-		return fmt.Errorf("%w: create verifier: %v", ErrSignatureInvalid, err)
+		return nil, fmt.Errorf("%w: create verifier: %v", ErrSignatureInvalid, err)
 	}
 
 	var b bundle.Bundle
 	if err := b.UnmarshalJSON(bundleJSON); err != nil {
-		return fmt.Errorf("%w: parse bundle: %v", ErrSignatureInvalid, err)
+		return nil, fmt.Errorf("%w: parse bundle: %v", ErrSignatureInvalid, err)
 	}
 
 	algorithm, digestBytes, err := parseDigest(expectedDigest)
 	if err != nil {
-		return fmt.Errorf("parse digest: %w", err)
+		return nil, fmt.Errorf("parse digest: %w", err)
 	}
 
 	// 依次尝试每条身份规则。
@@ -71,24 +71,32 @@ func (v *sigstoreVerifier) Verify(ctx context.Context, bundleJSON []byte, expect
 			verify.WithCertificateIdentity(certID),
 		))
 		if err == nil {
-			return nil
+			// 密码学验证通过。现在从**同一条已验证的证书链**里取出身份。
+			// 注意：必须在验签成功后才提取，否则等于把未经背书的数据当事实。
+			id, idErr := ExtractIdentityFromBundle(bundleJSON)
+			if idErr != nil {
+				// 验签过了但拿不到可认证身份 = 策略层没有判定依据 = 拒绝。
+				// 这里直接返回错误而不降级读 payload（立项书 Non-negotiable 第 2 条）。
+				return nil, idErr
+			}
+			return id, nil
 		}
 		lastErr = err
 	}
 
 	if lastErr == nil {
-		return fmt.Errorf("%w: no identity rule produced a result", ErrSignatureInvalid)
+		return nil, fmt.Errorf("%w: no identity rule produced a result", ErrSignatureInvalid)
 	}
 
 	// 错误分类：把 sigstore-go 的错误映射成调用方可判断的类型。
 	msg := lastErr.Error()
 	switch {
 	case strings.Contains(msg, "artifact digest"):
-		return fmt.Errorf("%w: %v", ErrDigestMismatch, lastErr)
+		return nil, fmt.Errorf("%w: %v", ErrDigestMismatch, lastErr)
 	case strings.Contains(msg, "identity") || strings.Contains(msg, "certificate"):
-		return fmt.Errorf("%w: %v", ErrIdentityMismatch, lastErr)
+		return nil, fmt.Errorf("%w: %v", ErrIdentityMismatch, lastErr)
 	default:
-		return fmt.Errorf("%w: %v", ErrSignatureInvalid, lastErr)
+		return nil, fmt.Errorf("%w: %v", ErrSignatureInvalid, lastErr)
 	}
 }
 

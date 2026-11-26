@@ -2,7 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: attest-admission
-  namespace: default
+  # 必须与 webhook.yaml 的 namespaceSelector 排除名单一致：
+  # 本 Pod 自己也要过准入，webhook 未就绪时会被自己拦死（failurePolicy: Fail）。
+  namespace: attest-system
 spec:
   replicas: 1
   selector:

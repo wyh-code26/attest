@@ -43,10 +43,11 @@ func (l *FileLoader) Load(_ context.Context) (Policy, error) {
 		return nil, fmt.Errorf("parse policy yaml %s: %w", l.Path, err)
 	}
 
-	// 基础校验：MinSLSA 必须在 1-3 之间。
-	// 0 或负数意味着"没有策略"，4 意味着"超出 SLSA 定义"——两者都是配置错误。
-	if rule.MinSLSA < 1 || rule.MinSLSA > 3 {
-		return nil, fmt.Errorf("invalid policy: min_slsa must be 1-3, got %d", rule.MinSLSA)
+	// fail closed：字段非法一律拒绝启动。
+	// 尤其 allowed_build_signer_regex 里的正则如果编译失败，
+	// 静默跳过会导致白名单意外变宽，必须在这里就拦住。
+	if err := CompileRules(rule); err != nil {
+		return nil, fmt.Errorf("parse policy yaml %s: %w", l.Path, err)
 	}
 
 	return NewSimplePolicy(rule), nil
