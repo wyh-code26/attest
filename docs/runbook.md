@@ -407,9 +407,12 @@ ServiceAccount 设 `automountServiceAccountToken: false`。这意味着**当前�
 
 策略和身份白名单放在 ConfigMap 里，改它们**不需要重建镜像**：
 
+策略的唯一生效来源是 `chart/values.yaml` 的 `config.policy`（及 `config.identities`）。
+
 ```bash
-# 1. 改 chart/files/policy.yaml 或直接 --set
-vim chart/files/policy.yaml
+# 1. 改 values.yaml 的 config.policy，或用一个独立文件覆盖：
+#     helm upgrade ... --set-file config.policy=my-policy.yaml
+vim chart/values.yaml
 
 # 2. 升级（Deployment 的 checksum/config 注解会触发滚动重启）
 helm upgrade attest chart/ -n attest-system --reuse-values
