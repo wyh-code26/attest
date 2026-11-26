@@ -21,10 +21,8 @@ certs/
 # 本地工具
 hack/cosign-linux-amd64
 
-# e2e 测试信任根固化为可复现 fixture（不含私钥，私钥仅在测试运行时生成）
-!hack/e2e/testdata/
-!hack/e2e/testdata/trusted_root.json
-
-# e2e 运行时新生成的私钥绝不入库
+# e2e 运行时新生成的私钥绝不入库。
+# 测试信任根不再固化到版本库：每次 newPKI() 都是全新随机密钥，
+# 固化会让 go test 每次都留下内容不同的工作区变更，且无任何读取方。
 hack/e2e/testdata/*.key
 hack/e2e/testdata/*.pem

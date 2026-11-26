@@ -55,13 +55,15 @@ func TestVerifyRealBundle(t *testing.T) {
 		id.Issuer, id.BuildSignerURI, id.SLSALevel())
 }
 
-// TestWriteFixture 把测试信任根写入 hack/e2e/testdata/，
-// 使 fixture 进入版本库、可复现，且不被 Docker 镜像复制。
+// TestWriteFixture 演示并验证：测试用自签信任根可以被写出并重新加载。
+//
+// 写入位置是 t.TempDir()，不是 hack/e2e/testdata/。理由：
+// 每次 newPKI() 都会生成全新的随机密钥，把它写进版本库会让
+// `go test ./...` 每次都留下一个内容不同的工作区变更——
+// 与"测试不应污染工作区"冲突，且该文件没有任何读取方（e2e 运行时
+// 在 t.TempDir() 里自已现生成信任根）。
 func TestWriteFixture(t *testing.T) {
-	if testing.Short() {
-		t.Skip("short 模式跳过 fixture 写入")
-	}
-	dir := filepath.Join("testdata")
+	dir := t.TempDir()
 	p, err := newPKI()
 	if err != nil {
 		t.Fatalf("生成测试 PKI: %v", err)
@@ -70,12 +72,18 @@ func TestWriteFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("生成 trusted_root.json: %v", err)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("创建 testdata: %v", err)
-	}
 	path := filepath.Join(dir, "trusted_root.json")
 	if err := os.WriteFile(path, root, 0o644); err != nil {
 		t.Fatalf("写入 %s: %v", path, err)
 	}
-	t.Logf("已写入 %s (%d bytes)", path, len(root))
+
+	// 写出去的文件必须能被生产加载器读回，否则这个演示无意义。
+	tm, err := verify.NewFileTrustMaterial(path)
+	if err != nil {
+		t.Fatalf("重新加载 %s: %v", path, err)
+	}
+	if tm == nil {
+		t.Fatal("重新加载返回 nil")
+	}
+	t.Logf("已写入临时目录 %s (%d bytes)，并可被生产加载器读回", path, len(root))
 }
