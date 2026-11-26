@@ -118,7 +118,7 @@ spec:
             # 信任根留在镜像内：它是公开的 Sigstore 信任锚，不是私钥，
             # 放进 ConfigMap 会让"信任根被谁改过"难以审计。
             - name: ATTEST_TRUSTED_ROOT
-              value: /app/trusted_root.json
+              value: /app/sigstore_trusted_root.json
             # 允许被访问的镜像仓库白名单。
             #
             # 不配的后果：Pod 里的任意镜像引用都会让本服务发起一次

@@ -86,7 +86,7 @@ func Load() (Config, error) {
 		}
 		cfg.TrustedRootPath = v
 	} else {
-		cfg.TrustedRootPath = "trusted_root.json"
+		cfg.TrustedRootPath = "sigstore_trusted_root.json"
 	}
 
 	if v, ok := os.LookupEnv("ATTEST_IDENTITY_FILE"); ok {

@@ -186,6 +186,24 @@ config:
       - issuer: "https://token.actions.githubusercontent.com"
         san_regexp: "^https://github\\.com/wyh-code26/attest/\\.github/workflows/release\\.yml@refs/tags/v"
 
+  # 策略字段说明（与 internal/verify/identity.go 的判定保持一致）：
+  #   min_slsa_level               要求的最低 SLSA 等级（1/2/3）
+  #   allowed_source_repositories  允许的源码仓库，精确匹配证书 SourceRepoURI（空=不限制）
+  #   allowed_build_signer_regex   允许的构建签名者正则，匹配证书 BuildSignerURI（空=不限制）
+  #
+  # 所有判据都取自**签名证书的 Fulcio 扩展**，不读 attestation payload。
+  # payload 里的 builder / buildType 是推送方自填的字符串，可任意伪造；
+  # 只有证书扩展经过密码学背书。
+  #
+  # SLSA 等级如何从证书推导：
+  #   runner_env=github-hosted 且 build_config_uri 非空 → L3
+  #   runner_env=self-hosted                            → L2
+  #   runner_env 为空但 build_config_uri 非空            → L2
+  #   其余                                              → L1
+  # 理由：L3 要求构建过程由平台强制、构建方不可篡改。github-hosted 满足；
+  # self-hosted 的运行环境由构建方自控，即使有 build config 也封顶 L2。
+  #
+  # 注意：这是策略的唯一生效来源，不存在其他仍需同步的文件。
   policy: |
     min_slsa_level: 3
     allowed_source_repositories:

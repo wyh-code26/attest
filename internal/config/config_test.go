@@ -54,7 +54,7 @@ func TestLoad_Defaults(t *testing.T) {
 		"Addr":             {cfg.Addr, ":8090"},
 		"TLSCertPath":      {cfg.TLSCertPath, "certs/tls.crt"},
 		"TLSKeyPath":       {cfg.TLSKeyPath, "certs/tls.key"},
-		"TrustedRootPath":  {cfg.TrustedRootPath, "trusted_root.json"},
+		"TrustedRootPath":  {cfg.TrustedRootPath, "sigstore_trusted_root.json"},
 		"IdentityFilePath": {cfg.IdentityFilePath, "identities.yaml"},
 	}
 	for name, c := range strings {

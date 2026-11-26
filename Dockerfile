@@ -28,7 +28,7 @@ COPY --from=builder /app/attest-api .
 # 拷贝策略、身份配置与信任根（H1 改造后强依赖）
 COPY policy.yaml /app/policy.yaml
 COPY identities.yaml /app/identities.yaml
-COPY trusted_root.json /app/trusted_root.json
+COPY sigstore_trusted_root.json /app/sigstore_trusted_root.json
 
 # 防回归自检：镜像里出现任何私钥或证书就直接构建失败。
 # 光靠"删掉那一行 COPY"不够——后续有人为了调试把证书 COPY 回来，

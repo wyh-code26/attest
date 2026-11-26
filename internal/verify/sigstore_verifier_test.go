@@ -39,10 +39,10 @@ func findRepoRoot(t *testing.T) string {
 func realTestInputs(t *testing.T) (trustPath, bundlePath string) {
 	t.Helper()
 	root := findRepoRoot(t)
-	trustPath = filepath.Join(root, "trusted_root.json")
+	trustPath = filepath.Join(root, "sigstore_trusted_root.json")
 	bundlePath = filepath.Join(root, "testdata", "bundle-provenance.json")
 	if _, err := os.Stat(trustPath); err != nil {
-		t.Skipf("trusted_root.json not available: %v", err)
+		t.Skipf("sigstore_trusted_root.json not available: %v", err)
 	}
 	if _, err := os.Stat(bundlePath); err != nil {
 		t.Skipf("test bundle not available: %v", err)
