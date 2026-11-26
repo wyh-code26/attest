@@ -9,7 +9,7 @@
 // 这里刻意不复用生产代码里的任何测试开关——生产二进制通过
 // ATTEST_TRUSTED_ROOT 指向本工具生成的 trusted_root.json，
 // 走的是与线上完全相同的验签代码路径。
-package main
+package e2e
 
 import (
 	"crypto"
