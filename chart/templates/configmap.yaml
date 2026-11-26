@@ -1,0 +1,19 @@
+# 策略与身份配置。
+#
+# 渲染进 ConfigMap 并以 subPath 覆盖镜像内的同名文件，目的是：
+#   "改策略不改代码、不重建镜像"（立项书 Non-negotiable 第 4 条）。
+#
+# 这里刻意不挂载整个 ConfigMap 目录到 /app：
+# 那样会连同其他键一起覆盖，且 subPath 之外的更新不会反映到运行中的容器。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "attest.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+data:
+  policy.yaml: |
+    {{- .Values.config.policy | nindent 4 }}
+  identities.yaml: |
+    {{- .Values.config.identities | nindent 4 }}

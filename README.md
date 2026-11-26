@@ -11,19 +11,37 @@
 
 ## 部署
 
-```bash
-make kind-setup     # 创建 Kind 集群并修复 kube-proxy RBAC（仅 Kind 环境）
-docker build -t attest-api:latest .
-kind load docker-image attest-api:latest
-kubectl apply -f deploy/
-make deploy-tls     # 生成证书、创建 Secret、同步 caBundle、重启 Deployment
-```
-
-证书轮换不需要重建镜像：
+生产部署用 Helm Chart（`chart/`）。证书由 cert-manager 自动签发与轮换，
+caBundle 由 cainjector 注入，**清单里恒为空**，不存在"忘了同步 caBundle"这回事。
 
 ```bash
-./hack/deploy-tls.sh --regen
+# 前提：集群已装 cert-manager（Chart 不把它做成 subchart 依赖，避免 helm 需联网拉依赖）
+helm repo add jetstack https://charts.jetstack.io
+helm install cert-manager jetstack/cert-manager -n cert-manager --create-namespace \
+  --set crds.enabled=true
+
+# 部署
+helm upgrade --install attest chart/ -n attest-system --create-namespace
+kubectl rollout status deploy/attest -n attest-system --timeout=180s
 ```
+
+本地 Kind 环境一条命令走完（建集群 → 修 kube-proxy RBAC → 装 cert-manager → helm install）：
+
+```bash
+make kind-setup
+```
+
+证书轮换不需要重建镜像，也不需要在清单里做任何操作：
+
+```bash
+kubectl delete secret attest-tls -n attest-system   # cert-manager 立即重签
+```
+
+进程在每次 TLS 握手前检查证书文件是否变化，变化即重载，**续期后无需重启 Pod**。
+详见 `docs/runbook.md`。
+
+`deploy/*.yaml` 与 `hack/deploy-tls.sh` 是 Chart 之前的单文件部署方式，
+保留用于理解演进过程，**新部署不要再用**——它们是"手工同步 caBundle"故障的来源。
 
 ## Design Decisions
 
@@ -72,6 +90,68 @@ kube-proxy SA 缺 system:node-proxier
 这是 Kind 的本地环境缺陷，生产集群不涉及。`hack/kind-setup.sh` 会创建绑定、
 重启 kube-proxy，并用 `kubernetes.default` 的 ClusterIP 做端到端自检。
 
+### 引导顺序死锁：attest 的 webhook 会拦住 cert-manager 自己的 Pod
+
+实测中遇到的真实现象：`helm install` 之前环境里已有一份旧的 webhook 配置，
+cert-manager 三个 Deployment 全部 `0 副本`，ReplicaSet 事件是：
+
+```
+Error creating: admission webhook "attest.wyh-code26.github.io" denied the request:
+image "quay.io/jetstack/cert-manager-controller:v1.16.5" must be pinned by sha256 digest
+```
+
+因果链是一个闭环：
+
+```
+attest 的 caBundle 要靠 cert-manager 注入
+  -> cert-manager 必须先装好
+  -> 装 cert-manager 要创建它的 Pod
+  -> 创建 Pod 被 attest 的 webhook 拦住（镜像没按 digest 固定）
+  -> cert-manager 永远装不上
+  -> attest 的 caBundle 永远是空的
+```
+
+这个闭环不是靠调策略能解开的——**cert-manager 的镜像确实没有按 digest 固定**，
+按 H4 规则就该拒绝，放宽规则等于为了让基础设施能装而削弱准入。
+
+解法只能是引导阶段排除：`excludeNamespaces` 里必须包含 `cert-manager`。
+Chart 的默认值已含该项，并写明原因，防止后来者"清理无用配置"时删掉。
+
+代价是 `cert-manager` 命名空间的 Pod 不受检查，因此这些命名空间里不应部署业务负载。
+同理 `attest-system` 自身也被排除，否则 webhook 起不来就永远无法自举。
+
+### 证书续期后进程不会自动重载（已修）
+
+cert-manager 更新 Secret 后，kubelet 会把新文件写进挂载点，但
+`http.Server.ListenAndServeTLS(path, path)` 只在启动时读一次证书。
+这意味着**证书看起来是新的（Secret 里是新的、caBundle 也对），进程却还在用启动时
+那份旧证书**。等到旧证书过期，apiserver 就连不上 webhook，在 `failurePolicy: Fail`
+下整个集群无法创建 Pod，而所有监控指标都显示"证书正常"。
+
+实测证据（修复前的行为）：
+
+```bash
+# Secret 已换新
+$ kubectl get secret attest-tls -n attest-system -o jsonpath='{.data.tls\.crt}' \
+    | base64 -d | openssl x509 -noout -serial
+serial=6459A0B9E2290E1C1041859F3E746B55
+
+# Pod 内还是更旧的一张
+$ kubectl exec -n attest-system $POD -- cat /app/certs/tls.crt | openssl x509 -noout -serial
+serial=B95A24FDC70DC7975D74542C856ABC28
+```
+
+修复方式是在 `cmd/api/main.go` 里用 `tls.Config.GetCertificate` + `certReloader`：
+每次握手前 `stat` 证书文件，变化则重读，**无需重启 Pod**。
+未用 `fsnotify` 监听文件，是因为 Secret 挂载更新走的是 `..data` 符号链接原子替换，
+监听具体文件会因 inode 变化而失效；`stat` 的开销远小于一次 TLS 握手。
+
+重读失败时保留上一份可用证书：cert-manager 写 Secret 与 kubelet 同步挂载点之间
+存在窗口，此时证书文件可能短暂处于半写入状态，让所有握手瞬间失败是不可接受的。
+
+单测覆盖两种情形：证书被替换后必须用上新证书；文件损坏时必须保留旧证书
+（`cmd/api/main_test.go`）。
+
 ### `failurePolicy: Fail` 在基础设施故障时的放大效应
 
 kube-proxy 故障导致 apiserver 无法访问 webhook 时，整个集群的 Pod 创建被卡死，
@@ -113,6 +193,21 @@ Rekor log），签发与生产格式一致的 Sigstore bundle，推入进程内 
 | A2 缺失 attestation 拒绝 | 通过（Kind 实测 + e2e 自动化） | Kind 集群实测拒绝；`TestE2E_A2_MissingAttestationDenied` 返回 `ErrAttestationNotFound` |
 | A3 篡改 payload 拒绝 | 通过（测试环境 + 单测，两条证据） | `TestE2E_A3_TamperedPayloadDenied`：签名后改一字节 → `signature invalid: accepted signatures do not match threshold` |
 | A3 digest 不匹配拒绝 | 通过（测试环境 + 单测，两条证据） | `TestE2E_A3_DigestMismatchDenied`：签名合法但 subject digest 与镜像不符 → `provided artifact digest does not match any digest in statement` |
+
+生产部署形态（A9）实测，全部在 Kind 集群 + 本地 cert-manager v1.16.5 上验证：
+
+| 项 | 状态 | 证据 |
+| --- | --- | --- |
+| Chart 无静态校验错误 | 通过 | `helm lint chart/` → `1 chart(s) linted, 0 chart(s) failed` |
+| caBundle 由 cert-manager 自动注入 | 通过 | `caBundle` 长度 736 字符（非空），解码后 `subject=CN=attest-ca`；`openssl verify -CAfile ca.pem leaf.pem` → `OK` |
+| 安全不变量不被 values 覆盖 | 通过 | 渲染结果 `failurePolicy: Fail`、`timeoutSeconds: 10`；Chart 不提供这两个字段的开关 |
+| PodDisruptionBudget | 通过 | `poddisruptionbudget.policy/attest  MIN AVAILABLE 2  ALLOWED DISRUPTIONS 0`（3 副本时） |
+| HorizontalPodAutoscaler | 通过 | `minReplicas 3 / maxReplicas 10 / cpu 70%`；实测 `currentReplicas 3, desiredReplicas 3`。Kind 无 metrics-server，`TARGETS` 显示 `<unknown>`，但 HPA 仍正确收敛到 `minReplicas` |
+| NetworkPolicy | 通过 | `attest-default-deny`（`podSelector: {}`）+ `attest-allow`（入站 8090、DNS 53、出站 443） |
+| 镜像白名单（SSRF 防护） | 通过 | 白名单外仓库被直接拒绝：`image registry not allowed: "evil.example.com"`，不再发起出站请求 |
+| 证书自动重建 | 通过 | 删除 Secret 后 30s 内 `certificate attest-tls READY=True`，Secret 自动重建 |
+| 证书热加载（无需重启） | 通过 | 删 Secret 触发重签后，Pod 内 `tls.crt` serial 变为 `6459A0B9...`，且 `status.startTime` 未变；日志出现 `TLS certificate reloaded` |
+| 准入在 Helm 部署后仍生效 | 通过 | H4：`image "alpine:3.19" must be pinned by sha256 digest`；M3：`image registry not allowed` |
 
 测试材料边界：
 

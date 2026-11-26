@@ -1,0 +1,26 @@
+apiVersion: v2
+name: attest
+description: |
+  attest 是 Kubernetes 镜像来源证明（attestation）准入控制器。
+  它在 Pod 创建时验证镜像的 Sigstore 签名与 SLSA provenance，
+  按声明式策略判定是否放行。任何验证失败一律拒绝（failurePolicy: Fail）。
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - supply-chain
+  - sigstore
+  - slsa
+  - admission-webhook
+  - security
+home: https://github.com/wyh-code26/attest
+sources:
+  - https://github.com/wyh-code26/attest
+
+# 前置条件（不以 subchart 形式声明，避免 helm template/lint 需要联网拉依赖）：
+# cert-manager 必须先于本 Chart 安装。caBundle 由 cainjector 注入，
+# 缺了它 webhook 会以空 caBundle 上线，apiserver 报
+# x509: certificate signed by unknown authority，在 failurePolicy: Fail
+# 下整个集群无法创建 Pod。hack/kind-setup.sh 负责安装 cert-manager。
+# 见 docs/runbook.md。

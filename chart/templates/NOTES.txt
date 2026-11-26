@@ -1,0 +1,16 @@
+attest 已安装到命名空间 {{ .Release.Namespace }}。
+
+1) 等待 webhook 就绪（cert-manager 签发证书 + cainjector 注入 caBundle 需要时间）：
+   kubectl rollout status deployment/{{ include "attest.fullname" . }} -n {{ .Release.Namespace }} --timeout=180s
+
+2) 确认 caBundle 已被注入（必须非空）：
+   kubectl get validatingwebhookconfiguration {{ include "attest.serviceName" . }} \
+     -o jsonpath='{.webhooks[0].clientConfig.caBundle}' | base64 -d | openssl x509 -noout -subject
+
+3) 查看 PDB / HPA / NetworkPolicy：
+   kubectl get pdb,hpa,networkpolicy -n {{ .Release.Namespace }}
+
+4) 验证准入确实生效（应被拒绝）：
+   kubectl run attest-probe --image=nginx:latest
+
+故障排查与证书轮换见 docs/runbook.md。

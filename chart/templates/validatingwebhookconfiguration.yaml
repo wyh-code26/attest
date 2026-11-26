@@ -1,0 +1,72 @@
+{{/*
+ValidatingWebhookConfiguration。
+
+两个安全不变量在这里固定，不提供 values 开关：
+  failurePolicy: Fail —— 任何验证失败必须 deny（立项书 Non-negotiable 第 2 条）
+  timeoutSeconds: 10 —— 超时必须快速失败，不能调大来"缓解"超时
+
+caBundle 故意留空，由 cert-manager cainjector 根据
+cert-manager.io/inject-ca-from 注解自动注入。原因见下。
+
+历史教训：过去 caBundle 被硬编码进清单，凡是执行 kubectl apply 都会把它
+覆盖回旧 CA。一旦证书重签，apiserver 就报
+  x509: certificate signed by unknown authority
+在 failurePolicy: Fail 下整个集群立刻无法创建 Pod。这个故障真实发生过两次。
+现在 caBundle 的唯一来源是 cainjector，清单里恒为空。
+*/}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "attest.serviceName" . }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+  annotations:
+    # cainjector 监视这个注解：把 Certificate 的 ca.crt 写入
+    # webhooks[].clientConfig.caBundle。证书轮换后 caBundle 自动更新。
+    # 引用格式：<namespace>/<Certificate 名>
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "attest.fullname" . }}-tls
+    {{- with .Values.podAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+webhooks:
+  - name: {{ .Values.webhook.name }}
+    admissionReviewVersions: ["v1"]
+    # sideEffects: None 是 sideEffects=Some 的反面：本 webhook 无副作用，
+    # 也因此允许被 apiserver 在 dry-run 时调用。
+    sideEffects: None
+    # 固定值，不参数化。改它等于放宽立项书的安全底线。
+    failurePolicy: Fail
+    # 10s 是硬约束：再大只会让故障时集群卡得更久，不会更安全。
+    timeoutSeconds: 10
+    matchPolicy: Equivalent
+    clientConfig:
+      service:
+        name: {{ include "attest.serviceName" . }}
+        namespace: {{ .Release.Namespace }}
+        path: "/admission"
+        port: {{ .Values.service.port }}
+      # 留空，由 cainjector 注入。切勿在此写死 base64 CA。
+      caBundle: ""
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+        scope: "*"
+    {{- with .Values.webhook.namespaceSelector.excludeNamespaces }}
+    # 用 namespaceSelector 而非 objectSelector 排除自身。
+    #
+    # 为什么：objectSelector 按对象 label 过滤，任何能给自己 Pod 打上
+    # 那个 label 的人都能绕过整条准入链。按命名空间排除后，
+    # 对象自身的 label 不再影响是否被检查。
+    #
+    # 排除命名空间是必要的 bootstrap 例外：attest 自身的 Pod 也在集群内创建，
+    # 若它自己被拦（服务未就绪 + failurePolicy: Fail）就永远起不来。
+    # 代价是该命名空间内其他 Pod 也不受检查，所以 attest 应独占命名空间。
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            {{- toYaml . | nindent 12 }}
+    {{- end }}

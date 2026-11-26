@@ -1,0 +1,33 @@
+# attest 准入策略配置。
+#
+# 修改此文件后，重启服务（kubectl rollout restart）即可生效，不需要重新编译二进制。
+# 这就是立项书 Non-negotiable 第 4 条的实现："改策略不改代码"。
+#
+# 所有判据都取自**签名证书的 Fulcio 扩展**，不读 attestation payload。
+# payload 里的 builder / buildType 是推送方自己写的字符串，可任意伪造；
+# 只有证书扩展经过密码学背书。
+#
+# 字段说明：
+#   min_slsa_level:               要求的最低 SLSA 等级（1/2/3）
+#   allowed_source_repositories:  允许的源码仓库，精确匹配证书的 SourceRepoURI
+#                                 （空表示不限制）
+#   allowed_build_signer_regex:   允许的构建签名者正则，匹配证书的 BuildSignerURI
+#                                 （空表示不限制）
+#
+# SLSA 等级如何从证书推导（与 internal/verify/identity.go 保持一致）：
+#   runner_env=github-hosted 且 build_config_uri 非空 → L3
+#   runner_env=self-hosted                            → L2
+#   runner_env 为空但 build_config_uri 非空            → L2
+#   其余                                              → L1
+# 理由：L3 要求构建过程由平台强制、构建方不可篡改。github-hosted 满足；
+# self-hosted 的运行环境由构建方自控，即使有 build config 也封顶 L2。
+
+# 要求构建达到 SLSA L3，且源码来自本仓库、由 release workflow 签名
+min_slsa_level: 3
+
+allowed_source_repositories:
+  - "https://github.com/wyh-code26/attest"
+
+allowed_build_signer_regex:
+  # 只允许打 tag 的 release workflow 签名，不接受任意分支的构建。
+  - '^https://github\.com/wyh-code26/attest/\.github/workflows/release\.ya?ml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'

@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "attest.serviceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  # 准入 webhook 必须走 ClusterIP 正常转发。
+  # 不要设 clusterIP: None：headless Service 没有稳定 VIP，
+  # webhook 的 clientConfig 无法可靠寻址。
+  selector:
+    {{- include "attest.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: https
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+      # 名字与 targetPort 对上，供 NetworkPolicy 精确引用。

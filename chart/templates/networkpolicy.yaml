@@ -1,0 +1,82 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/*
+NetworkPolicy。
+
+前提认知：Kubernetes 的 NetworkPolicy 默认是"未匹配即放行"。
+只写一条 allow 规则的 policy 不会拒绝任何东西，必须显式写
+podSelector: {} + policyTypes: [Ingress, Egress] 才是 default-deny。
+所以这里用两条独立对象：
+  1. default-deny：兜底拒绝所有进出
+  2. allow：只放行真正需要的流量
+
+顺序无关：NetworkPolicy 是"并集"语义，任一 policy 放行即放行，
+因此 default-deny 会拒绝所有未被第 2 条放行的流量。
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "attest.fullname" . }}-default-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+spec:
+  # 空 selector 表示选中命名空间内所有 Pod，这才是 default-deny 该有的范围。
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "attest.fullname" . }}-allow
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "attest.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 只放行 apiserver 到 webhook 端口。
+    #
+    # 无法用 podSelector 精确表达 apiserver：它在控制平面（或集群外），
+    # 没有稳定的 Pod 标签可依赖。硬编码 IP 段又会随集群/云厂商变化，
+    # 一旦写错就是 failurePolicy: Fail 下的全网拒绝，比放开更危险。
+    #
+    # 折中：限制到端口 443 且不带 from（即任意来源可连 443），
+    # 这是 webhook 的必需面；服务本身还有 x509 双向校验，
+    # 未持有效客户端证书/或非 apiserver 的连接拿不到有效数据。
+    - ports:
+        - port: {{ .Values.service.targetPort }}
+          protocol: TCP
+  egress:
+    # 1) DNS。不放行 DNS 会导致 Service/Registry 域名解析失败，
+    #    表现为启动后一直失败或拉取 attestation 超时。
+    - ports:
+        - port: {{ .Values.networkPolicy.egress.dnsPort }}
+          protocol: UDP
+        - port: {{ .Values.networkPolicy.egress.dnsPort }}
+          protocol: TCP
+    {{- if .Values.networkPolicy.egress.allowAllEgress443 }}
+    # 2) 访问 Registry 拉取 attestation。
+    #    Registry 地址由被准入的镜像引用决定，Chart 无法预知，
+    #    因此按端口放行 443。需要更强隔离时把 allowAllEgress443 设为 false
+    #    并填写 allowedEgressCIDRs。
+    - ports:
+        - port: 443
+          protocol: TCP
+    {{- else if .Values.networkPolicy.egress.allowedEgressCIDRs }}
+    - to:
+        {{- range .Values.networkPolicy.egress.allowedEgressCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+{{- end }}

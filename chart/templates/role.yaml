@@ -1,0 +1,47 @@
+{{- if .Values.rbac.create -}}
+# 最小权限 Role。
+#
+# 事实依据：本控制器的生效代码路径中没有任何 K8s API 调用
+# （grep 'kubernetes|clientset|InCluster' 在非测试代码中无命中）。
+# 它只在准入请求里做密码学校验和出站 Registry 访问。
+#
+# 因此这里不授予任何 list/watch Pod 之类"看起来有用"的权限。
+# 授予多余权限的代价是：一旦控制器被攻破，攻击者能枚举整个命名空间的 Pod。
+#
+# 保留的唯一权限是读取自己的 Secret。
+# 说明：当前版本的程序并不通过 API 读 Secret（证书由 kubelet 以文件挂载），
+# 这条规则是为后续"证书热加载不重启"预留的、且已用 resourceNames 限定到单个对象。
+# 如果确认不需要，可以 rbac.create=false 或删掉这条规则，安全性只会更高。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "attest.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+rules:
+  # 只读自己那一个 Secret，不授予 list 全命名空间 Secret 的权限。
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.certManager.secretName | quote }}]
+    verbs: ["get"]
+  {{- with .Values.rbac.extraRules }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "attest.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "attest.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "attest.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end -}}

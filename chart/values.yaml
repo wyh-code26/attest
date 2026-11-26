@@ -1,0 +1,230 @@
+# attest Helm Chart 默认值。
+#
+# 生产使用前必须覆盖的项：
+#   - image.repository / image.tag          （换成你发布的镜像）
+#   - config.identities                     （删掉测试用的 sigstore-js 身份）
+#   - config.policy.allowedSourceRepositories / allowedBuildSignerRegex
+#
+# 安全不变量（本 Chart 不提供开关，改了就是破坏安全模型）：
+#   - ValidatingWebhookConfiguration 的 failurePolicy 恒为 Fail
+#   - timeoutSeconds 恒为 10
+#   - 私钥/证书永不进 Chart、永不进镜像；由 cert-manager 签发到 Secret
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  # 生产请使用带 digest 或不可变 tag 的镜像。
+  repository: attest-api
+  tag: latest
+  pullPolicy: IfNotPresent
+  imagePullSecrets: []
+
+# 副本数。
+#
+# 注意：replicas 与 autoscaling.enabled 互斥。
+# 开启 HPA 后由 HPA 接管副本数，Deployment 里不再渲染 replicas，
+# 否则每次 helm upgrade 都会把副本数打回静态值，与 HPA 反复打架。
+replicas: 3
+
+# 资源限制。
+#
+# limits == requests（Guaranteed QoS）：准入控制器位于每一个 Pod 创建的
+# 关键路径上，被 CPU 节流会直接放大成 apiserver 侧 webhook 超时，
+# 在 failurePolicy: Fail 下变成集群级故障。Guaranteed 换取可预测的调度与延迟。
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Pod 反亲和：避免所有副本落在同一节点，否则单节点故障 = webhook 全灭。
+podAntiAffinity:
+  enabled: true
+  # soft：小集群（如 Kind）硬约束会导致部分副本 Pending。
+  # 生产多可用区集群可改为 required。
+  type: soft
+
+# PodDisruptionBudget。
+#
+# minAvailable: 2 与 replicas: 3 配套：节点排水时至少留 2 个副本可用，
+# 保证 webhook 不被排空导致 failurePolicy: Fail 全面拒绝 Pod 创建。
+pdb:
+  enabled: true
+  minAvailable: 2
+  # 若同时设置 maxUnavailable 会与 minAvailable 冲突，这里只暴露一个。
+
+# 水平扩缩容。
+#
+# 准入 webhook 是 CPU 密集型（每个 Pod 创建要验签 + 拉取 attestation），
+# 突发创建（滚动发布、批量扩容）会打爆单副本。
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  behavior:
+    scaleDown:
+      # 缩容比扩容慢得多：webhook 副本不足的代价是集群级拒绝，
+      # 而多留几个副本只是多花一点 CPU。
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+
+# NetworkPolicy。
+#
+# webhook 的网络面只有两个方向：
+#   ingress：仅 kube-apiserver 访问 443
+#   egress ：仅 DNS 解析
+# 出站还要能连 Registry（拉 attestation），这是业务必需的，
+# 通过 allowedEgressCIDRs 显式声明，默认不做全局放行。
+networkPolicy:
+  enabled: true
+  # apiserver 的来源无法用 podSelector 表达（它在集群外或 control-plane），
+  # 因此按端口 + 命名空间/网段白名单限制。
+  # 留空表示"任意来源可访问 443"——这是 webhook 的必需行为，
+  # apiserver 地址随集群不同，硬编码会造成误阻断。
+  ingress:
+    port: 443
+  egress:
+    # DNS：必须放行，否则 Service 名解析失败导致启动即卡住。
+    dnsPort: 53
+    # 允许访问 Registry 的网段。默认放行全部出站 443，
+    # 因为 Registry 地址由 pod image 决定，无法预知。
+    # 高安全要求环境建议收紧为你的 Registry 网段。
+    allowAllEgress443: true
+    allowedEgressCIDRs: []
+
+# cert-manager 配置。
+#
+# Chart 不含任何私钥/证书。Certificate 资源由 cert-manager 签发到 Secret，
+# cainjector 通过 validatingwebhookconfiguration 上的
+# cert-manager.io/inject-ca-from 注解把 CA 注入 caBundle。
+certManager:
+  # Issuer 类型：selfSigned（自签名，适合内网/Kind）或 ca（用你的 CA 签发）。
+  # selfSigned 会额外创建一个 bootstrap Issuer 来签发 leaf 证书，
+  # 因为 cert-manager 的 SelfSigned Issuer 签出的证书不能用作 CA 信任锚。
+  issuerType: selfSigned
+  # issuerType=ca 时使用：引用一个已存在的 CA Secret（含 tls.crt/tls.key）。
+  caSecretName: ""
+  # 证书有效期与提前续期时间。
+  # 续期窗口留得足够长：webhook 证书过期 = 集群无法创建 Pod。
+  duration: 8760h      # 1 年
+  renewBefore: 720h    # 提前 30 天续期
+  # privateKey 算法。
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  # Secret 名称，必须与 deployment 的卷引用一致。
+  secretName: attest-tls
+
+# Service 配置。
+# 集群 DNS 域，用于生成 Certificate 的 FQDN SAN。
+# apiserver 调用 webhook 用的是完整 FQDN，域名不匹配会报 SAN 错误。
+clusterDomain: cluster.local
+
+service:
+  type: ClusterIP
+  port: 443
+  targetPort: 8090
+
+# ValidatingWebhookConfiguration。
+webhook:
+  # name 同时用于 webhook 条目名（需为域名形式）。
+  name: attest.wyh-code26.github.io
+  # 不提供 failurePolicy 与 timeoutSeconds 的 value 开关。
+  # 立项书 Non-negotiable：任何验证失败必须 deny，超时必须快速失败。
+  # 放宽这两个值等于把"组件故障"变成"准入被静默绕过"。
+  namespaceSelector:
+    # 必须排除本 Chart 所在命名空间：attest 自己的 Pod 也在集群内创建，
+    # 若它自己被拦（服务未就绪 + failurePolicy: Fail）就永远起不来，
+    # 形成死锁。这是 bootstrap 例外，代价是该命名空间内其他 Pod 不受检查，
+    # 所以 attest 应独占一个命名空间。
+    # 被排除（不受本 webhook 检查）的命名空间。
+    #
+    # 每一项都是 bootstrap 必需，不是图方便：
+    #   kube-system / kube-node-lease —— 控制平面自身组件，拦了会让集群失去自愈能力
+    #   attest-system                —— attest 自身 Pod，拦了 webhook 永远起不来（先有鸡还是先有蛋）
+    #   cert-manager                 —— cert-manager 的 Pod 要被本 webhook 拦就永远装不上，
+    #                                   而本 Chart 的 caBundle 又必须靠 cert-manager 注入，
+    #                                   形成死锁。实测中就是这个死锁导致
+    #                                   cert-manager 三个 Deployment 全部 0 副本。
+    #
+    # 代价：这些命名空间内的 Pod 不受准入检查。因此请勿把业务负载部署到以上命名空间。
+    excludeNamespaces:
+      - kube-system
+      - kube-node-lease
+      - attest-system
+      - cert-manager
+
+# 镜像仓库白名单，渲染为 ATTEST_ALLOWED_REGISTRIES。
+#
+# 为什么必须配：本服务会为 Pod 里的每个镜像引用发起一次出站请求
+#   GET https://<registry-host>/v2/...
+# 若不加白名单，任何能创建 Pod 的人都可以借本服务的身份访问任意主机，
+# 形成 SSRF 探测通道（扫内网、探测端口、判断服务是否存在）。
+#
+# 留空只适用于本地调试，程序会启动并打印 WARN。
+registry:
+  allowedRegistries:
+    - ghcr.io
+    - registry.k8s.io
+    - docker.io
+    - quay.io
+
+# 应用运行时配置，渲染为 ConfigMap 后挂载覆盖镜像内的默认文件。
+# 改策略不需要重建镜像，helm upgrade + 滚动重启即可。
+config:
+  # 允许的签名者身份。issuer 与 san_regexp 必须同时配置，
+  # 只配 issuer 等于放行任意 GitHub Actions workflow。
+  identities: |
+    identities:
+      - issuer: "https://token.actions.githubusercontent.com"
+        san_regexp: "^https://github\\.com/wyh-code26/attest/\\.github/workflows/release\\.yml@refs/tags/v"
+
+  policy: |
+    min_slsa_level: 3
+    allowed_source_repositories:
+      - "https://github.com/wyh-code26/attest"
+    allowed_build_signer_regex:
+      - '^https://github\.com/wyh-code26/attest/\.github/workflows/release\.ya?ml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+
+# RBAC。
+#
+# 最小权限：准入控制器只需要读自己的 ValidatingWebhookConfiguration 和 Secret
+# （用于热加载证书）。不需要 list/watch Pod、不需要写任何资源。
+# 注意 serviceAccount 不需要访问 Registry 的 K8s 权限——那是出站 HTTP。
+rbac:
+  create: true
+  # 额外自定义规则，默认为空。
+  extraRules: []
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# 探针。与 deploy/deployment.yaml 保持一致。
+probes:
+  readiness:
+    initialDelaySeconds: 2
+    periodSeconds: 5
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 20
+
+# 优雅关闭：正在处理的准入请求不该被 SIGTERM 打断。
+terminationGracePeriodSeconds: 30
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+# control-plane 专用集群（Kind）需要容忍污点才能调度。
+tolerateControlPlane: false
+
+podLabels: {}
+podAnnotations: {}

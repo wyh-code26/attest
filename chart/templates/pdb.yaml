@@ -1,0 +1,22 @@
+{{- if .Values.pdb.enabled }}
+# PodDisruptionBudget。
+#
+# 准入控制器在每一个 Pod 创建的关键路径上，且 failurePolicy: Fail。
+# 节点排水/集群升级时若把副本驱逐光，整个集群会无法创建 Pod，
+# 连用来排障的调试 Pod 都起不来。minAvailable 保证排水被阻塞而不是盲目前进。
+#
+# 前提：replicas（或 HPA minReplicas）必须 > minAvailable，
+# 否则 PDB 会让节点永久无法排水。values.yaml 默认 3 副本 / minAvailable 2。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "attest.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "attest.selectorLabels" . | nindent 6 }}
+{{- end }}

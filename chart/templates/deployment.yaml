@@ -1,0 +1,174 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "attest.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+spec:
+  {{- /*
+  开启 HPA 时不渲染 replicas：否则每次 helm upgrade 都会把副本数
+  打回静态值，与 HPA 互相覆盖，滚动发布期间可能出现副本数抖动。
+  */}}
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "attest.selectorLabels" . | nindent 6 }}
+  # 准入控制器滚动发布期间必须始终有可用副本，否则 failurePolicy: Fail
+  # 会让整个集群的 Pod 创建失败。maxUnavailable: 0 保证先起后停。
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "attest.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # ConfigMap 内容变化时触发滚动重启。
+        # 不加这个，改策略后 Pod 仍读旧文件（subPath 挂载不会热更新）。
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "attest.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # 65532 是 distroless/alpine 常见非 root UID，与镜像内 USER 保持一致。
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.podAntiAffinity.type "required" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  {{- include "attest.selectorLabels" . | nindent 18 }}
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "attest.selectorLabels" . | nindent 20 }}
+          {{- end }}
+        {{- with .Values.affinity }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- else if .Values.affinity }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if or .Values.tolerateControlPlane .Values.tolerations }}
+      tolerations:
+        {{- with .Values.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.tolerateControlPlane }}
+        # Kind 等单节点集群：不加容忍会因 control-plane 污点一直 Pending。
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: attest
+          image: {{ include "attest.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: https
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          env:
+            # 显式给绝对路径，不依赖镜像的 WORKDIR。
+            # 配置默认值是相对路径 certs/tls.crt，一旦有人改了 WORKDIR，
+            # 相对路径就会指向别处，表现为启动即 panic 或 CrashLoopBackOff。
+            - name: ATTEST_TLS_CERT
+              value: /app/certs/tls.crt
+            - name: ATTEST_TLS_KEY
+              value: /app/certs/tls.key
+            # 指向 ConfigMap 覆盖后的策略与身份文件。
+            - name: ATTEST_POLICY_PATH
+              value: /app/config/policy.yaml
+            - name: ATTEST_IDENTITY_FILE
+              value: /app/config/identities.yaml
+            # 信任根留在镜像内：它是公开的 Sigstore 信任锚，不是私钥，
+            # 放进 ConfigMap 会让"信任根被谁改过"难以审计。
+            - name: ATTEST_TRUSTED_ROOT
+              value: /app/trusted_root.json
+            # 允许被访问的镜像仓库白名单。
+            #
+            # 不配的后果：Pod 里的任意镜像引用都会让本服务发起一次
+            # 出站请求（"https://<该镜像的 registry host>/v2/"）。
+            # 攻击者只需提交一个 Pod，镜像写成 https://attacker 域，
+            # 就能借本服务的网络身份去扫内网（SSRF），
+            # 或被用来探测服务是否可达。
+            #
+            # 留空时程序会启动并打 WARN，只用不配才适合本地调试。
+            - name: ATTEST_ALLOWED_REGISTRIES
+              value: {{ join "," .Values.registry.allowedRegistries | quote }}
+          volumeMounts:
+            # 证书来自 cert-manager 签发的 Secret。
+            # Secret 缺失时 Pod 停在 ContainerCreating（而不是启动后崩溃），
+            # 便于区分"没配证书"和"证书内容有误"。
+            - name: tls
+              mountPath: /app/certs
+              readOnly: true
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.service.targetPort }}
+              scheme: HTTPS
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.service.targetPort }}
+              scheme: HTTPS
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # 只读根文件系统：证书与配置都从挂载点读取，无需写盘。
+            # 缩小被攻破后的持久化能力。
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ .Values.certManager.secretName }}
+            # 证书私钥不应落地成组/全局可读，kubelet 按 0400 挂载。
+            defaultMode: 0400
+        - name: config
+          configMap:
+            name: {{ include "attest.fullname" . }}-config

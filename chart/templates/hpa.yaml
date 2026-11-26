@@ -1,0 +1,35 @@
+{{- if .Values.autoscaling.enabled }}
+# HorizontalPodAutoscaler（autoscaling/v2）。
+#
+# 用 CPU 作为扩容信号：每处理一个准入请求要拉取 attestation 并做 ECDSA
+# 验签 + Rekor/SCT 校验，是 CPU 密集型。批量创建 Pod（滚动发布、节点扩容）
+# 会形成突发流量。
+#
+# minReplicas 必须 >= 3：配合 PDB(minAvailable: 2) 才能保证
+# 任何时刻都有一个副本可以被驱逐而不影响可用性。
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "attest.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "attest.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+  {{- with .Values.autoscaling.behavior }}
+  behavior:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

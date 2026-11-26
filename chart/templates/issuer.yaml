@@ -1,0 +1,108 @@
+{{/*
+Issuer 拓扑。
+
+issueType=selfSigned 需要两个 Issuer，这是 cert-manager 的必需形态：
+  - SelfSigned Issuer 签出的证书无法作为信任锚（它没有 CA:TRUE 的自签名根），
+    直接用它签 leaf 会导致 caBundle 里的内容无法验证 leaf。
+  - 因此引入一个"bootstrap CA"：SelfSigned Issuer 先签出一个自签名 CA 证书
+    存到 CA Secret，再由 CA Issuer 用这个 CA 签 webhook 的 leaf 证书。
+只有这样 caBundle（= CA 证书）才能验证服务端证书。
+
+issueType=ca 则直接用用户提供的 CA Secret，适合已有企业 CA 的场景。
+*/}}
+{{- if eq .Values.certManager.issuerType "selfSigned" }}
+# 1) bootstrap：自签名 Issuer，只用来签发下面的 CA 证书。
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "attest.fullname" . }}-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+# 2) 由 bootstrap 签出的 CA 证书，私钥存进 Secret，仅 cert-manager 内部使用。
+#    这份私钥永远不挂载进业务 Pod，也不进 Chart/镜像。
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "attest.fullname" . }}-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+spec:
+  isCA: true
+  commonName: {{ include "attest.fullname" . }}-ca
+  secretName: {{ include "attest.fullname" . }}-ca-tls
+  duration: {{ .Values.certManager.duration }}
+  renewBefore: {{ .Values.certManager.renewBefore }}
+  privateKey:
+    algorithm: {{ .Values.certManager.privateKey.algorithm }}
+    size: {{ .Values.certManager.privateKey.size }}
+  issuerRef:
+    name: {{ include "attest.fullname" . }}-bootstrap
+    kind: Issuer
+    group: cert-manager.io
+  # CA 证书本身不进 Pod，只给 cert-manager 用。
+  usages:
+    - cert sign
+    - crl sign
+---
+# 3) 真正的签发者：用上面那个 CA 签 webhook 证书。
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "attest.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ include "attest.fullname" . }}-ca-tls
+{{- else }}
+# issuerType=ca：使用外部提供的 CA Secret。
+# 该 Secret 必须包含 tls.crt / tls.key 且 tls.crt 是 CA 证书。
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "attest.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ required "certManager.caSecretName is required when issuerType=ca" .Values.certManager.caSecretName }}
+{{- end }}
+---
+{{/*
+webhook 服务端证书。
+
+dnsNames 必须包含 apiserver 实际访问用的名字（FQDN）。
+cert-manager 签出的 leaf 证书会带 CA 链，Secret 里同时有 tls.crt/tls.key/ca.crt，
+其中 ca.crt 正是 cainjector 注入 caBundle 的来源。
+*/}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "attest.fullname" . }}-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "attest.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.certManager.secretName }}
+  duration: {{ .Values.certManager.duration }}
+  renewBefore: {{ .Values.certManager.renewBefore }}
+  privateKey:
+    algorithm: {{ .Values.certManager.privateKey.algorithm }}
+    size: {{ .Values.certManager.privateKey.size }}
+    # 私钥落在 Secret 里，不写磁盘外的任何位置；rotationPolicy 保证续期时换新私钥。
+    rotationPolicy: Always
+  dnsNames:
+    {{- include "attest.dnsNames" . | nindent 4 }}
+  issuerRef:
+    name: {{ include "attest.fullname" . }}
+    kind: Issuer
+    group: cert-manager.io
+  usages:
+    - server auth
